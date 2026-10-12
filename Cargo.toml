@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "BSD-2-Clause OR MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+eframe = "0.36.2"
+mrtklib-egui-common = { path = "crates/mrtklib-egui-common" }
