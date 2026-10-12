@@ -1,0 +1,26 @@
+[global]
+disable = ["MD025", "MD013"]
+
+[MD003]
+style = "atx"
+
+[MD004]
+style = "dash"
+
+[MD018]
+magiclink = true
+
+[MD035]
+style = "---"
+
+[MD046]
+style = "fenced"
+
+[MD048]
+style = "backtick"
+
+[MD049]
+style = "asterisk"
+
+[MD050]
+style = "asterisk"
