@@ -1,0 +1,10 @@
+[package]
+name = "mrtklib-egui-common"
+description = "Parts shared by the mrtklib-egui applications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+eframe.workspace = true
