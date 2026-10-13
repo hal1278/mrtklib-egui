@@ -1,19 +1,17 @@
 //! The common masking point for GUI display and logging.
 
 /// Mask non-empty secret values and password-bearing URL/stream-path userinfo.
-/// Whitespace is preserved. Leading quotes and an assignment prefix (`path=`) are
+/// Supplied secrets are replaced first, so userinfo masking cannot hide a match's
+/// prefix and leave its tail visible. Whitespace is preserved. Leading quotes and
+/// an assignment prefix (`path=`) are
 /// kept outside userinfo; the last `@` before the first path slash ends userinfo.
 /// A colon in userinfo means a password, so the entire userinfo becomes `***`.
 /// Schema-marked configuration secrets must be supplied here once config RPC exists.
 pub fn mask(text: &str, secrets: &[&str]) -> String {
-    let mut userinfo_masked = String::with_capacity(text.len());
-    for word in text.split_inclusive(char::is_whitespace) {
-        userinfo_masked.push_str(&mask_word(word));
-    }
     // Merge overlapping occurrences in the original text, rather than masking
     // replacement markers again or exposing the tail of an overlapping secret.
-    let mut result = String::with_capacity(userinfo_masked.len());
-    let mut rest = userinfo_masked.as_str();
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
     while !rest.is_empty() {
         if let Some(mut end) = secret_length(rest, secrets) {
             let mut cursor = 0;
@@ -36,7 +34,11 @@ pub fn mask(text: &str, secrets: &[&str]) -> String {
             rest = &rest[ch.len_utf8()..];
         }
     }
-    result
+    let mut masked = String::with_capacity(result.len());
+    for word in result.split_inclusive(char::is_whitespace) {
+        masked.push_str(&mask_word(word));
+    }
+    masked
 }
 
 fn secret_length(text: &str, secrets: &[&str]) -> Option<usize> {
@@ -116,5 +118,10 @@ mod tests {
         assert_eq!(mask("abcdef", &["abc", "cde"]), "***f");
         assert_eq!(mask("ababa", &["aba"]), "***");
         assert_eq!(mask("秘密suffix", &["秘密"]), "***suffix");
+    }
+
+    #[test]
+    fn a_secret_spanning_userinfo_and_host_is_masked_whole() {
+        assert_eq!(mask("user:abcdef@tail", &["abcdef@tail"]), "user:***");
     }
 }

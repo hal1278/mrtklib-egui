@@ -12,8 +12,6 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
-
 const READY_PREFIX: &[u8] = b"MRTK-RPC-READY ";
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -27,10 +25,18 @@ pub fn generate_token() -> String {
 
 /// The same program and argv are used for preview and execution. Secrets belong
 /// in the separate environment parameter of [`Supervisor::spawn`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CommandLine {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+}
+
+impl fmt::Debug for CommandLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommandLine")
+            .field("preview", &self.preview())
+            .finish()
+    }
 }
 
 impl CommandLine {
@@ -71,6 +77,10 @@ pub struct Options {
     /// Default 10 s: listening is reported immediately; allows a slow machine
     /// but reports a stuck start. Revisit with the real `mrtk run`.
     pub ready_timeout: Duration,
+    /// Default 1 s after reaping: the child's output is already in the pipe and
+    /// drains within milliseconds. This bound matters when a descendant holds
+    /// the pipe open and keeps GUI shutdown responsive; readers then detach.
+    pub drain_timeout: Duration,
 }
 
 impl Default for Options {
@@ -80,6 +90,7 @@ impl Default for Options {
             max_display_chars: 1000,
             max_lines: 1000,
             ready_timeout: Duration::from_secs(10),
+            drain_timeout: Duration::from_secs(1),
         }
     }
 }
@@ -118,8 +129,17 @@ struct Inner {
     state: State,
     ready_seen: bool,
     readers_done: usize,
+    readers_expected: usize,
     stderr_done: bool,
     ended: bool,
+    exited_at: Option<Instant>,
+    drain_expired: bool,
+}
+
+impl Inner {
+    fn awaiting_output(&self) -> bool {
+        self.readers_done < self.readers_expected && !self.drain_expired
+    }
 }
 
 struct Shared {
@@ -171,7 +191,7 @@ impl Shared {
     }
 
     fn exit_before_ready(&self, inner: &mut Inner) {
-        if inner.stderr_done
+        if (inner.stderr_done || inner.drain_expired)
             && matches!(inner.state.readiness, Readiness::Waiting)
             && let Some(status) = inner.state.exit_status
         {
@@ -179,6 +199,25 @@ impl Shared {
                 inner,
                 &format!("process exited before the ready line: {status}"),
             );
+        }
+    }
+
+    /// A single deadline shared by the monitor, stop and drop; never restart it.
+    fn expire_drain(&self, inner: &mut Inner) -> bool {
+        if inner.awaiting_output()
+            && inner
+                .exited_at
+                .is_some_and(|at| at.elapsed() >= self.options.drain_timeout)
+        {
+            inner.drain_expired = true;
+            self.error(
+                inner,
+                "the output drain timeout passed; output is no longer awaited",
+            );
+            self.exit_before_ready(inner);
+            true
+        } else {
+            false
         }
     }
 
@@ -194,10 +233,6 @@ impl Shared {
     }
 
     fn ready(&self, bytes: Option<&[u8]>) {
-        #[derive(Deserialize)]
-        struct Ready {
-            url: String,
-        }
         self.update(|inner| {
             if inner.ready_seen {
                 self.error(inner, "a second ready line was received");
@@ -210,12 +245,16 @@ impl Shared {
                     std::str::from_utf8(bytes).map_err(|_| "the ready line was not valid UTF-8")
                 })
                 .and_then(|text| {
-                    serde_json::from_str::<Ready>(text)
-                        .map_err(|_| "the ready line was not a JSON object with a string url")
+                    serde_json::from_str::<serde_json::Value>(text)
+                        .ok()
+                        .and_then(|value| {
+                            value.as_object()?.get("url")?.as_str().map(str::to_owned)
+                        })
+                        .ok_or("the ready line was not a JSON object with a string url")
                 });
             match result {
-                Ok(ready) if matches!(inner.state.readiness, Readiness::Waiting) => {
-                    inner.state.readiness = Readiness::Ready { url: ready.url };
+                Ok(url) if matches!(inner.state.readiness, Readiness::Waiting) => {
+                    inner.state.readiness = Readiness::Ready { url };
                 }
                 Ok(_) => {} // A late line cannot undo a reported startup failure.
                 Err(reason) => self.fail(inner, reason),
@@ -225,12 +264,13 @@ impl Shared {
 }
 
 /// Owns one child. Reader threads update a snapshot; a monitor polls every 100 ms
-/// so `kill` never waits behind a blocking `Child::wait`. Drop kills and joins.
+/// so `kill` never waits behind a blocking `Child::wait`. Drop kills, reaps and
+/// drains for a bounded time; readers detach when a descendant holds a pipe.
 pub struct Supervisor {
     shared: Arc<Shared>,
     child: Arc<Mutex<Option<Child>>>,
-    threads: Vec<JoinHandle<()>>,
-    readers: usize,
+    reader_threads: Mutex<Vec<JoinHandle<()>>>,
+    monitor: Option<JoinHandle<()>>,
 }
 
 impl fmt::Debug for Supervisor {
@@ -264,8 +304,11 @@ impl Supervisor {
                 },
                 ready_seen: false,
                 readers_done: 0,
+                readers_expected: 0,
                 stderr_done: false,
                 ended: false,
+                exited_at: None,
+                drain_expired: false,
             }),
             changed: Condvar::new(),
             notify: Box::new(notify),
@@ -275,8 +318,8 @@ impl Supervisor {
         let mut supervisor = Self {
             shared,
             child: Arc::new(Mutex::new(None)),
-            threads: Vec::new(),
-            readers: 0,
+            reader_threads: Mutex::new(Vec::new()),
+            monitor: None,
         };
         let started = Instant::now();
         let result = Command::new(command_line.program)
@@ -310,19 +353,33 @@ impl Supervisor {
             let result = thread::Builder::new()
                 .name(format!("mrtk-{stream:?}"))
                 .spawn(move || read_pipe(pipe, stream, &shared));
-            if !supervisor.add_thread(result) {
-                supervisor.reap();
-                return supervisor;
+            match result {
+                Ok(thread) => {
+                    supervisor
+                        .reader_threads
+                        .lock()
+                        .expect("reader handles lock poisoned")
+                        .push(thread);
+                    supervisor.shared.lock().readers_expected += 1;
+                }
+                Err(error) => {
+                    supervisor.thread_error(error);
+                    supervisor.reap();
+                    return supervisor;
+                }
             }
-            supervisor.readers += 1;
         }
         let shared = Arc::clone(&supervisor.shared);
         let child = Arc::clone(&supervisor.child);
         let result = thread::Builder::new()
             .name("mrtk-process-monitor".into())
             .spawn(move || monitor(&child, &shared, started));
-        if !supervisor.add_thread(result) {
-            supervisor.reap();
+        match result {
+            Ok(thread) => supervisor.monitor = Some(thread),
+            Err(error) => {
+                supervisor.thread_error(error);
+                supervisor.reap();
+            }
         }
         supervisor
     }
@@ -364,50 +421,73 @@ impl Supervisor {
         }
     }
 
-    /// Wait for exit and drained output, or return false at the timeout. A spawn
-    /// failure is already ended, even though it has no exit status.
+    /// Wait for exit and output draining (or its bounded timeout), or return false
+    /// at this call's timeout. A spawn failure is already ended without a status.
     pub fn wait_exit(&self, timeout: Duration) -> bool {
         let inner = self.shared.lock();
         let (inner, _) = self
             .shared
             .changed
             .wait_timeout_while(inner, timeout, |inner| {
-                !inner.ended || inner.readers_done < self.readers
+                !inner.ended || inner.awaiting_output()
             })
             .expect("state lock poisoned");
-        inner.ended && inner.readers_done >= self.readers
+        inner.ended && !inner.awaiting_output()
     }
 
     /// Allow the caller's shutdown request to finish, then force termination and
-    /// reap. This call also waits for all output to be drained.
+    /// reap. After reaping, await output for at most the remaining drain timeout,
+    /// then detach readers; descendants may still hold the pipes open.
     pub fn stop(&self, grace: Duration) {
-        if !self.wait_exit(grace) {
+        let inner = self.shared.lock();
+        let (inner, _) = self
+            .shared
+            .changed
+            .wait_timeout_while(inner, grace, |inner| !inner.ended)
+            .expect("state lock poisoned");
+        let ended = inner.ended;
+        drop(inner);
+        if !ended {
             self.reap();
         }
-        // Reaping itself need not await pipe readers; wait for their final updates.
-        let mut inner = self.shared.lock();
-        while !inner.ended || inner.readers_done < self.readers {
-            inner = self
-                .shared
-                .changed
-                .wait(inner)
-                .expect("state lock poisoned");
-        }
+        self.drain_output();
+        self.reader_threads
+            .lock()
+            .expect("reader handles lock poisoned")
+            .clear();
     }
 
-    fn add_thread(&mut self, result: io::Result<JoinHandle<()>>) -> bool {
-        match result {
-            Ok(thread) => {
-                self.threads.push(thread);
-                true
+    fn thread_error(&self, error: io::Error) {
+        self.shared.update(|inner| {
+            self.shared
+                .fail(inner, &format!("cannot start supervisor thread: {error}"));
+        });
+    }
+
+    fn drain_output(&self) {
+        loop {
+            let mut inner = self.shared.lock();
+            if !inner.awaiting_output() {
+                return;
             }
-            Err(error) => {
-                self.shared.update(|inner| {
-                    self.shared
-                        .fail(inner, &format!("cannot start supervisor thread: {error}"));
-                });
-                false
+            if self.shared.expire_drain(&mut inner) {
+                drop(inner);
+                self.shared.changed.notify_all();
+                (self.shared.notify)();
+                return;
             }
+            let wait = self.shared.options.drain_timeout.saturating_sub(
+                inner
+                    .exited_at
+                    .expect("child reaped before draining")
+                    .elapsed(),
+            );
+            drop(
+                self.shared
+                    .changed
+                    .wait_timeout_while(inner, wait, |inner| inner.awaiting_output())
+                    .expect("state lock poisoned"),
+            );
         }
     }
 
@@ -437,11 +517,18 @@ impl Drop for Supervisor {
         if !self.shared.lock().ended {
             self.reap();
         }
-        for thread in self.threads.drain(..) {
-            if thread.join().is_err() {
-                self.shared
-                    .update(|inner| self.shared.error(inner, "a supervisor thread panicked"));
-            }
+        self.drain_output();
+        self.reader_threads
+            .get_mut()
+            .expect("reader handles lock poisoned")
+            .clear();
+        // Only the monitor has a guaranteed end; inherited pipes can keep readers
+        // blocked indefinitely. Dropping their handles detaches them safely.
+        if let Some(thread) = self.monitor.take()
+            && thread.join().is_err()
+        {
+            self.shared
+                .update(|inner| self.shared.error(inner, "the supervisor monitor panicked"));
         }
     }
 }
@@ -457,9 +544,12 @@ fn poll_child(child: &Mutex<Option<Child>>, shared: &Shared) -> bool {
     match result {
         Ok(Some(status)) => {
             shared.update(|inner| {
-                inner.state.exit_status = Some(status);
-                inner.ended = true;
-                shared.exit_before_ready(inner);
+                if !inner.ended {
+                    inner.state.exit_status = Some(status);
+                    inner.exited_at = Some(Instant::now());
+                    inner.ended = true;
+                    shared.exit_before_ready(inner);
+                }
             });
             true
         }
@@ -473,20 +563,29 @@ fn poll_child(child: &Mutex<Option<Child>>, shared: &Shared) -> bool {
 
 fn monitor(child: &Mutex<Option<Child>>, shared: &Shared, started: Instant) {
     loop {
-        if shared.lock().ended || poll_child(child, shared) {
-            return;
+        if !shared.lock().ended {
+            poll_child(child, shared);
         }
         let mut inner = shared.lock();
+        let mut changed = false;
         if matches!(inner.state.readiness, Readiness::Waiting)
             && started.elapsed() >= shared.options.ready_timeout
         {
             shared.fail(&mut inner, "the ready timeout passed");
+            changed = true;
+        }
+        changed |= shared.expire_drain(&mut inner);
+        let finished = inner.ended && !inner.awaiting_output();
+        if changed {
             drop(inner);
             shared.changed.notify_all();
             (shared.notify)();
             inner = shared.lock();
         }
-        let wait = if matches!(inner.state.readiness, Readiness::Waiting) {
+        if finished {
+            return;
+        }
+        let mut wait = if matches!(inner.state.readiness, Readiness::Waiting) {
             POLL_INTERVAL.min(
                 shared
                     .options
@@ -496,10 +595,20 @@ fn monitor(child: &Mutex<Option<Child>>, shared: &Shared, started: Instant) {
         } else {
             POLL_INTERVAL
         };
+        if let Some(at) = inner.exited_at {
+            wait = wait.min(shared.options.drain_timeout.saturating_sub(at.elapsed()));
+        }
+        let ended = inner.ended;
         drop(
             shared
                 .changed
-                .wait_timeout_while(inner, wait, |inner| !inner.ended)
+                .wait_timeout_while(inner, wait, |inner| {
+                    if ended {
+                        inner.awaiting_output()
+                    } else {
+                        !inner.ended
+                    }
+                })
                 .expect("state lock poisoned"),
         );
     }
@@ -735,5 +844,8 @@ mod tests {
             "\"a program/mrtk\" run \"\" \"a\\\"b\\\\c\\n\" ntrip://***@host/MNT"
         );
         assert_eq!(command.args[3], "ntrip://user:pass@host/MNT");
+        let debug = format!("{command:?}");
+        assert!(debug.contains("ntrip://***@host/MNT"));
+        assert!(!debug.contains("user:pass"));
     }
 }

@@ -137,12 +137,13 @@ Each connection starts with an initial synchronization. Events missed while disc
 
 - It starts, stops and kills child processes, collects exit status, and reads their output. UI code (windows, panels, widgets) never starts a process.
 - The command preview and the executed argv are built from the same value. Display text is never executed.
-- `CommandLine` holds the program and argv; its preview quotes ambiguous words for display, not shell execution. Secret environment variables are supplied separately and their values added to the masking list. Tokens are 32 OS-random bytes encoded as unpadded base64url; failure of the OS random source stops token generation.
+- `CommandLine` holds the program and argv; its preview quotes ambiguous words for display, not shell execution, and its debug output contains only that masked preview. Secret environment variables are supplied separately and their values added to the masking list. Tokens are 32 OS-random bytes encoded as unpadded base64url; failure of the OS random source stops token generation.
 - Each piped output has a blocking std reader thread; this works with Linux, Windows pipes and macOS without an async runtime. Stdin is null in this slice.
 - An `Arc<Mutex<...>>` holds a bounded snapshot, copied by the UI; a notify callback runs after updates, outside the lock, as in the RPC session. UI scheduling never holds up pipe reads; the callback promptly requests a repaint.
 - A monitor polls `try_wait` every 100 ms (provisional: exit is shown within 0.1 s). The child lock covers only `try_wait` or `kill`, so a blocking wait cannot delay a kill.
-- `stop` waits for the caller's shutdown request during a grace period, then kills and reaps. Exit waits also drain output so final lines are available. Drop kills a running child, reaps it and joins the threads, tying its lifetime to the GUI.
-- If the GUI itself crashes or is killed, this crate cannot kill the child: std provides no portable parent-death signal. A Windows job object is a later platform task.
+- `stop` waits for the caller's shutdown request during a grace period, then kills and reaps. Drop also kills and reaps a running child. Both await readers for at most the remaining drain timeout, detach them and join only the monitor on drop; detached readers keep updating the shared state until the pipes close.
+- The drain timeout is 1 s after reaping: the exited child's output is already in the pipe and is read within milliseconds. The bound matters when a descendant holds a pipe open and keeps GUI shutdown responsive. Expiry records an error that output is no longer awaited; exit waits finish after draining or expiry. The monitor and shutdown calls share one deadline, so repeated waits do not extend it.
+- If the GUI itself crashes or is killed, this crate cannot kill the child: std provides no portable parent-death signal. A Windows job object is a later platform task. Descendants (programs that `mrtk` started) are not killed by this crate; `mrtk`'s own shutdown is responsible for them.
 
 ## Child process output
 
@@ -151,8 +152,8 @@ Each connection starts with an initial synchronization. Events missed while disc
 - Display lines keep at most 1000 characters after masking, plus a visible `…` when truncated. Output and supervisor errors each retain 1000 entries; older entries are dropped and counted. These values are provisional: bounded memory as in the RPC session, and readable lines; revisit when the log panel is designed.
 - Lines defined as machine-readable (the readiness line, progress JSON) are decoded whole in their format, without display processing. A line over the limit or not in the format is an error; it is never silently dropped or truncated. Which lines are machine-readable is defined by MRTKLIB.
 - This slice recognizes only stderr lines starting with `MRTK-RPC-READY `: decode a JSON object with a string `url`, ignore unknown members and never display the line. Malformed UTF-8, overlong or malformed readiness lines fail startup; a second ready line records an error.
-- Readiness is waiting, ready with a URL, or failed; callers copy the snapshot or block on a condition variable. Exit before ready records the exit status after stderr is drained, avoiding a race with the final ready line.
-- The ready timeout is 10 s, provisionally: the server reports listening immediately, so healthy starts are fast; this allows a slow machine but reports a stuck start. Revisit with real `mrtk run`.
+- Readiness is waiting, ready with a URL, or failed; callers copy the snapshot or block on a condition variable. Exit before ready records the exit status after stderr is drained or the drain timeout passes, avoiding a race with the final ready line without waiting forever for inherited pipes. A ready line already read keeps winning.
+- The ready timeout is 10 s, provisionally, and remains enforced after exit while draining: the server reports listening immediately, so healthy starts are fast; this allows a slow machine but reports a stuck start. Revisit with real `mrtk run`.
 - Other lines are shown without parsing, processed in this order: split into lines, lossy UTF-8 decoding, credential masking, truncation.
   Rationale: masking after truncation can miss a pattern such as `user:pass@host` whose `@host` was cut off, and show part of a password.
 - A pipe read error is displayed and the pending incomplete line is discarded: it may also cut a credential in the middle.
@@ -160,7 +161,7 @@ Each connection starts with an initial synchronization. Events missed while disc
 ## Credentials
 
 - Credentials are masked at a single point before anything is displayed or logged. Targets: URL userinfo, configuration values that the schema marks as secret, and the token created by the GUI.
-- `mrtklib_egui_supervisor::mask::mask` replaces every non-empty supplied secret value with `***`. Within each whitespace-separated word it skips leading quotes, an assignment prefix and an optional `scheme://`; before the first path slash, userinfo ends at the last `@`. Userinfo containing a colon is replaced entirely by `***`; userinfo without a password stays visible. Schema-marked secrets will be supplied when configuration RPC exists.
+- `mrtklib_egui_supervisor::mask::mask` first replaces every non-empty supplied secret value with `***`, so a secret spanning userinfo and host is removed whole. Within each whitespace-separated word it then skips leading quotes, an assignment prefix and an optional `scheme://`; before the first path slash, userinfo ends at the last `@`. Userinfo containing a colon is replaced entirely by `***`; userinfo without a password stays visible. Schema-marked secrets will be supplied when configuration RPC exists.
 - The backend masks secrets in runtime state (streams, log, status). `getConfig` can return plaintext to the authenticated GUI, so the GUI masks marked values on screen and in logs.
 - Masking patterns are tested.
 

@@ -3,9 +3,9 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process;
-use std::sync::Arc;
+use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ use mrtklib_egui_supervisor::{CommandLine, Options, Readiness, State, Stream, Su
 const TOKEN: &str = "test-supervisor_token-0123456789";
 const URL: &str = "ws://127.0.0.1:43215/rpc";
 const TIMEOUT: Duration = Duration::from_secs(5);
+const DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 fn command() -> CommandLine {
     CommandLine {
@@ -58,6 +59,81 @@ fn idle() -> ! {
     }
 }
 
+struct Grandchild {
+    socket: Option<TcpStream>,
+}
+
+impl Grandchild {
+    fn cleanup(&mut self) {
+        let mut socket = self.socket.take().unwrap();
+        socket.write_all(&[1]).unwrap();
+        assert_eq!(socket.read(&mut [0]).unwrap(), 0, "grandchild did not exit");
+    }
+}
+
+impl Drop for Grandchild {
+    fn drop(&mut self) {
+        if let Some(mut socket) = self.socket.take() {
+            // Best effort during assertion unwinding; the grandchild also has a
+            // five-second lifetime bound, so test failure cannot leave it running.
+            let _ = socket.write_all(&[1]);
+        }
+    }
+}
+
+fn inherited_pipes(
+    behavior: &str,
+    options: Options,
+) -> (Supervisor, Grandchild, mpsc::Receiver<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut variables = env(behavior);
+    variables.push((
+        "SUPERVISOR_TEST_ADDRESS".into(),
+        listener.local_addr().unwrap().to_string(),
+    ));
+    let (sender, notifications) = mpsc::channel();
+    let process = Supervisor::spawn(command(), &variables, options, move || {
+        // The receiver can disappear before a detached reader's final notification.
+        let _ = sender.send(());
+    });
+    let started = Instant::now();
+    let mut socket = loop {
+        match listener.accept() {
+            Ok((socket, _)) => break socket,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(started.elapsed() < TIMEOUT, "grandchild did not connect");
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("cannot accept grandchild: {error}"),
+        }
+    };
+    socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let mut started_byte = [0];
+    socket.read_exact(&mut started_byte).unwrap();
+    assert_eq!(started_byte, [1]);
+    (
+        process,
+        Grandchild {
+            socket: Some(socket),
+        },
+        notifications,
+    )
+}
+
+fn until_state(
+    process: &Supervisor,
+    notifications: &mpsc::Receiver<()>,
+    done: impl Fn(&State) -> bool,
+) {
+    let started = Instant::now();
+    while !done(&process.state()) {
+        notifications
+            .recv_timeout(TIMEOUT.saturating_sub(started.elapsed()))
+            .unwrap();
+    }
+}
+
 #[test]
 fn child() {
     let Ok(behavior) = std::env::var("SUPERVISOR_TEST_CHILD") else {
@@ -76,6 +152,7 @@ fn child() {
         "malformed" => eprintln!("MRTK-RPC-READY broken-{TOKEN}"),
         "missing-url" => eprintln!("MRTK-RPC-READY {{\"other\":true}}"),
         "non-string-url" => eprintln!("MRTK-RPC-READY {{\"url\":12}}"),
+        "array-ready" => eprintln!("MRTK-RPC-READY [\"{URL}\"]"),
         "duplicate" => {
             ready();
             ready();
@@ -140,6 +217,45 @@ fn child() {
             // Keep the socket open so the parent observes EOF only after termination.
             std::hint::black_box(&socket);
             idle();
+        }
+        "grandchild" => {
+            let mut socket =
+                TcpStream::connect(std::env::var("SUPERVISOR_TEST_ADDRESS").unwrap()).unwrap();
+            socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+            socket.write_all(&[1]).unwrap();
+            // Hold both inherited pipes until cleanup, with a bounded fallback
+            // lifetime if the parent test fails before sending its cleanup byte.
+            let _ = socket.read(&mut [0]);
+            eprintln!("grandchild cleaned up");
+            std::io::stdout().flush().unwrap();
+            std::io::stderr().flush().unwrap();
+            // Keep the socket until process exit: EOF confirms OS cleanup, rather
+            // than just the socket going out of scope before the process ends.
+            process::exit(0);
+        }
+        "inherited-exit" | "inherited-ready" | "inherited-kill" => {
+            let command = command();
+            let grandchild = process::Command::new(command.program)
+                .args(command.args)
+                .env(
+                    "SUPERVISOR_TEST_CHILD",
+                    "supervisor-child-behavior:grandchild",
+                )
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap();
+            // This child deliberately leaves its descendant for the test to
+            // clean up, modelling programs launched by mrtk with inherited pipes.
+            std::hint::black_box(&grandchild);
+            if behavior.ends_with("inherited-ready") || behavior.ends_with("inherited-kill") {
+                ready();
+            }
+            if behavior.ends_with("inherited-kill") {
+                idle();
+            }
+            process::exit(3);
         }
         "mock" => {
             let server = mrtklib_egui_mock::start(mrtklib_egui_mock::Config {
@@ -221,6 +337,7 @@ fn malformed_ready_errors_do_not_include_contents() {
         "malformed",
         "missing-url",
         "non-string-url",
+        "array-ready",
         "invalid-ready",
         "overlong-ready",
         "tiny-line",
@@ -439,6 +556,126 @@ fn drop_kills_reaps_and_joins() {
         0,
         "child is still running"
     );
+}
+
+#[test]
+fn drop_is_bounded_when_a_grandchild_holds_both_pipes() {
+    let (process, mut grandchild, _) = inherited_pipes(
+        "inherited-kill",
+        Options {
+            drain_timeout: DRAIN_TIMEOUT,
+            ..Default::default()
+        },
+    );
+    assert_eq!(process.wait_ready().unwrap(), URL);
+    let started = Instant::now();
+    drop(process);
+    let elapsed = started.elapsed();
+    assert!(elapsed >= DRAIN_TIMEOUT);
+    assert!(
+        elapsed < DRAIN_TIMEOUT + Duration::from_millis(500),
+        "drop took {elapsed:?}"
+    );
+    grandchild.cleanup();
+}
+
+#[test]
+fn stop_is_bounded_and_detached_readers_still_update_state() {
+    for behavior in ["inherited-ready", "inherited-kill"] {
+        let (process, mut grandchild, notifications) = inherited_pipes(
+            behavior,
+            Options {
+                drain_timeout: DRAIN_TIMEOUT,
+                ..Default::default()
+            },
+        );
+        assert_eq!(process.wait_ready().unwrap(), URL);
+        let started = Instant::now();
+        process.stop(Duration::ZERO);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < DRAIN_TIMEOUT + Duration::from_millis(500),
+            "stop took {elapsed:?}"
+        );
+        assert!(process.wait_exit(Duration::ZERO));
+        let state = process.state();
+        assert!(matches!(state.readiness, Readiness::Ready { .. }));
+        assert_eq!(
+            state
+                .errors
+                .iter()
+                .filter(|error| error.contains("output is no longer awaited"))
+                .count(),
+            1
+        );
+        // A second stop uses the original deadline instead of waiting another drain interval.
+        let started = Instant::now();
+        process.stop(Duration::ZERO);
+        assert!(started.elapsed() < DRAIN_TIMEOUT);
+        grandchild.cleanup();
+        until_state(&process, &notifications, |state| {
+            state
+                .lines
+                .iter()
+                .any(|line| line.text == "grandchild cleaned up")
+        });
+    }
+}
+
+#[test]
+fn exit_before_ready_is_bounded_even_when_stderr_is_inherited() {
+    let (process, mut grandchild, _) = inherited_pipes(
+        "inherited-exit",
+        Options {
+            drain_timeout: DRAIN_TIMEOUT,
+            ..Default::default()
+        },
+    );
+    let started = Instant::now();
+    let error = process.wait_ready().unwrap_err();
+    assert!(started.elapsed() < DRAIN_TIMEOUT + Duration::from_millis(500));
+    assert!(
+        error.contains("before the ready line") && error.contains('3'),
+        "{error}"
+    );
+    let state = exited(&process);
+    assert_eq!(state.exit_status.unwrap().code(), Some(3));
+    assert!(
+        state
+            .errors
+            .iter()
+            .any(|error| error.contains("output is no longer awaited"))
+    );
+    grandchild.cleanup();
+}
+
+#[test]
+fn ready_timeout_remains_active_after_exit_while_draining() {
+    let (process, mut grandchild, notifications) = inherited_pipes(
+        "inherited-exit",
+        Options {
+            ready_timeout: Duration::from_millis(400),
+            drain_timeout: Duration::from_secs(1),
+            ..Default::default()
+        },
+    );
+    until_state(&process, &notifications, |state| {
+        state.exit_status.is_some()
+    });
+    assert_eq!(process.state().readiness, Readiness::Waiting);
+    assert_eq!(
+        process.wait_ready().unwrap_err(),
+        "the ready timeout passed"
+    );
+    assert!(
+        !process
+            .state()
+            .errors
+            .iter()
+            .any(|error| error.contains("output is no longer awaited"))
+    );
+    grandchild.cleanup();
+    exited(&process);
 }
 
 #[test]
