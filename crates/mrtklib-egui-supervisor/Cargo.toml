@@ -1,0 +1,17 @@
+[package]
+name = "mrtklib-egui-supervisor"
+description = "Starts, stops and reads the output of mrtk child processes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+getrandom.workspace = true
+data-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+mrtklib-egui-mock.workspace = true
+mrtklib-egui-rpc = { path = "../mrtklib-egui-rpc" }

@@ -2058,6 +2058,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrtklib-egui-supervisor"
+version = "0.0.0"
+dependencies = [
+ "data-encoding",
+ "getrandom 0.3.4",
+ "mrtklib-egui-mock",
+ "mrtklib-egui-rpc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "naga"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
