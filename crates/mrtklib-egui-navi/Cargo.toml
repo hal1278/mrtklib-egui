@@ -8,3 +8,8 @@ publish.workspace = true
 [dependencies]
 eframe.workspace = true
 mrtklib-egui-common.workspace = true
+mrtklib-egui-rpc = { path = "../mrtklib-egui-rpc" }
+mrtklib-egui-supervisor = { path = "../mrtklib-egui-supervisor" }
+
+[dev-dependencies]
+mrtklib-egui-mock.workspace = true

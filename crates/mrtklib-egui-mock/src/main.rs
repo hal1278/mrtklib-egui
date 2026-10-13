@@ -10,7 +10,9 @@ use std::time::Duration;
 use mrtklib_egui_mock::Config;
 
 const USAGE: &str = "\
-usage: mrtklib-egui-mock [options]
+usage: mrtklib-egui-mock [run] [options]
+  --no-console            accepted for mrtk run compatibility (no effect)
+  --config FILE           accepted for mrtk run compatibility (ignored)
   --rpc-port PORT          port to listen on (default 0: chosen by the system)
   --rpc-bind ADDR          address to listen on (default 127.0.0.1)
   --rpc-origin ORIGIN      accept browser connections from ORIGIN (repeatable)
@@ -51,9 +53,19 @@ fn run(config: Config) -> ExitCode {
 fn parse(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
     let mut config = Config::default();
     let mut no_auth = false;
+    let mut first = true;
     while let Some(arg) = args.next() {
+        if first && arg == "run" {
+            first = false;
+            continue;
+        }
+        first = false;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
+            "--no-console" => {}
+            "--config" => {
+                let _ = value(&arg)?;
+            }
             "--rpc-port" => config.port = number(&value(&arg)?)?,
             "--rpc-bind" => {
                 config.bind = value(&arg)?
@@ -93,4 +105,49 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
 
 fn number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
     text.parse().map_err(|_| format!("not a number: {text}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn arguments(args: &[&str]) -> impl Iterator<Item = String> {
+        args.iter().map(|arg| (*arg).to_string())
+    }
+
+    #[test]
+    fn accepts_real_run_arguments_and_ignores_configuration() {
+        let config = parse(arguments(&[
+            "run",
+            "--rpc-port",
+            "0",
+            "--no-console",
+            "--config",
+            "a nonexistent config.toml",
+            "--rpc-no-auth",
+        ]))
+        .unwrap();
+        assert_eq!(config.port, 0);
+        assert!(config.token.is_none());
+        assert_eq!(
+            config.solution_interval,
+            Config::default().solution_interval
+        );
+        assert!(parse(arguments(&["--no-console", "--rpc-no-auth"])).is_ok());
+    }
+
+    #[test]
+    fn run_is_only_allowed_once_at_the_beginning() {
+        for args in [&["run", "run"][..], &["--no-console", "run"][..]] {
+            assert_eq!(parse(arguments(args)).unwrap_err(), "unknown option run");
+        }
+    }
+
+    #[test]
+    fn config_requires_a_file_argument() {
+        assert_eq!(
+            parse(arguments(&["run", "--config"])).unwrap_err(),
+            "--config needs a value"
+        );
+    }
 }

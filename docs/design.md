@@ -87,6 +87,7 @@ These are part of the GUI's job:
 
 - `mrtk` is bundled next to the GUI executables, and the GUI uses that copy by default. A user setting can select another `mrtk`. `mrtk` on PATH is not used by default.
   Rationale: users start the GUI like RTKLIB, without a separate install; the user setting allows trying development builds.
+- In the navi prototype, `MRTKLIB_EGUI_MRTK` selects a development executable. Relative overrides resolve against the working directory, including bare filenames, to avoid an accidental PATH search; an empty override is an error. Otherwise `mrtk` (`mrtk.exe` on Windows) is resolved next to `std::env::current_exe()`, without searching PATH. A later user setting will take precedence over the development variable.
 - The GUI shows the path and version of the `mrtk` in use. If that `mrtk` speaks a protocol version the GUI does not support, the GUI shows an error message and does not use it.
 - During the prototype, the bundled `mrtk` is built from the fork that implements the RPC (`hal1278/MRTKLIB`). After upstream merges it, it is built from upstream.
 
@@ -106,6 +107,18 @@ These are part of the GUI's job:
 
 Each connection starts with an initial synchronization. Events missed while disconnected cannot be recovered; to record solutions, use the `mrtk` output streams (for example a solution file), not the RPC.
 
+### Navi first vertical slice
+
+- The backend starts when the app starts and lives until the app closes, like RTKNAVI's server initialized at window creation. Start and Stop send only the RPC lifecycle requests. The executed command and its displayed preview share one `CommandLine`: `run --rpc-port 0 --no-console`, without `--config` until configuration handling exists. `generate_token()` supplies the secret environment variable `MRTK_RPC_TOKEN`.
+- A non-egui controller owns `Supervisor` and `Session`. Each logic pass reads the supervisor snapshot and starts one session on `Ready { url }`, without `wait_ready` or automatic reconnection. Both workers notify through `Context::request_repaint`; the shared window constructor can supply that context. Pure modules resolve the program and map state to display text, colors and enabled buttons; egui only draws the view and forwards actions.
+- Exit and window close start a shutdown worker: queue RPC `shutdown`, then call `Supervisor::stop` with a provisional 5 s grace. Shutdown stops positioning, saves navigation data and closes output files; 5 s allows that on a slow machine, and the kill afterwards keeps the backend tied to the GUI lifetime. The window remains responsive and defers closing until process exit and the supervisor's bounded drain complete. Completion is signalled before joining the session, so its request/close timeouts do not extend the window's closing delay.
+- Time is two lines: `GPST <week> <tow>` and ISO 8601 UTC with milliseconds. Round to the nearest millisecond before splitting fields, carrying into the next second, day, year or GPS week. UTC is the GPS epoch (1980-01-06) plus GPST minus the epoch's `leapSeconds`; Gregorian calendar conversion needs no new dependency or leap-second table.
+- Solution labels and RGB colors follow RTKNAVI: `----` silver `#C0C0C0`, FIX green `#008000`, FLOAT orange `#FFAA00`, SBAS fuchsia `#FF00FF`, DGPS blue `#0000FF`, SINGLE red `#FF0000`, PPP teal `#008080`. DR uses RTKPLOT's gray `#808080`. While running, status text and the square use that color (the square is white for none). Outside running, or after disconnect, status and time text are gray and the square is white.
+- Position is decimal degrees: N/S and E/W absolute values with 8 decimals and `°`; `He:` is ellipsoidal height with 3 decimals and `m`. The σ line is `E:%6.3f N:%6.3f U:%6.3f m`, from the square roots of ENU diagonal covariance, clamping negative variances to zero. Quality is RTKNAVI's `Age:%4.1f s Ratio:%4.1f #Sat:%2d`. None solutions show coordinate and quality placeholders, while their known epoch remains visible; before any solution the time also has placeholders. The final solution remains after Stop and clears on the next Starting event.
+- Start is shown when stopped, Stop otherwise; the action is enabled only when connected and the lifecycle is stopped or running. It is disabled during closing. Options stays disabled with a configuration-unavailable hover explanation. Protocol 0.1 supplies no stream state, so there are no Rover/Base/Corr indicators.
+- The bottom status text shows the backend command preview (including path), MRTKLIB and protocol versions when connected, startup or connection failures, or server exit. It also shows lifecycle, `stopReason`, `lastError`, the last request's error reason and message, known mode and nonzero lost-events count. Startup failure includes the supervisor's last masked output line. All view text, including labels and hover text, passes through the supervisor's common mask with the token before egui draws it. Long status text scrolls inside the compact window.
+- Switching position formats and time systems, orthometric height, solution scroll-back, PPP-AR labels, input stream indicators and a log panel are outside this slice. Tests cover pure display logic and the controller's readiness/session mapping with an in-process mock; another package's mock binary has no `CARGO_BIN_EXE_*` path here, so tests do not guess build directories. The orchestrator checks screenshots; this slice adds no GUI test dependency.
+
 ## Mock server
 
 - `mrtklib-egui-mock` imitates the `mrtk run` RPC endpoint (protocol 0.1). GUI code and its tests use it until `mrtk` implements the RPC, and later for situations that the real server rarely produces (a failed start, lost events, protocol errors).
@@ -116,7 +129,7 @@ Each connection starts with an initial synchronization. Events missed while disc
 - Positioning is simulated: a rover circling near a fixed base, going from single to float to fix, with a missing solution every 40 epochs. The values are test data, not positioning; the coordinate conversions that make them consistent stay in the mock and are not reused for display in the GUI crates.
 - The mock is used by tests and during development only; the applications do not depend on it.
 - Dependencies: `tungstenite` (a WebSocket implementation with a blocking API, so the mock needs no async runtime) and, for the tests only, `jsonschema` with its default features off (no fetching of external `$ref` targets over HTTP).
-- Differences from `mrtk run` in the executable: it does not generate a token when none is given and does not print the `--rpc-no-auth` warning. Its behavior options (start failure, input end, timing) are fixed for the whole process.
+- Differences from `mrtk run` in the executable: optional leading `run` and `--no-console` are accepted (`--no-console` has no effect: there is no console), and `--config <file>` is accepted but ignored (no configuration is read). It does not generate a token when none is given, remove the token variable from its environment, or print the `--rpc-no-auth` warning. Its behavior options (start failure, input end, timing) are fixed for the whole process.
 
 ## RPC client
 

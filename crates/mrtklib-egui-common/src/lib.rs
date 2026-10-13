@@ -10,6 +10,15 @@ pub fn run<A: eframe::App + 'static>(
     inner_size: [f32; 2],
     make_app: impl FnOnce() -> A + 'static,
 ) -> eframe::Result {
+    run_with_context(title, inner_size, move |_| make_app())
+}
+
+/// Open a window whose constructor needs a context for worker repaint callbacks.
+pub fn run_with_context<A: eframe::App + 'static>(
+    title: &str,
+    inner_size: [f32; 2],
+    make_app: impl FnOnce(&egui::Context) -> A + 'static,
+) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(title)
@@ -21,7 +30,7 @@ pub fn run<A: eframe::App + 'static>(
         options,
         Box::new(move |cc| {
             setup(&cc.egui_ctx);
-            Ok(Box::new(make_app()))
+            Ok(Box::new(make_app(&cc.egui_ctx)))
         }),
     )
 }
