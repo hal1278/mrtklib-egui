@@ -13,6 +13,8 @@ eframe = "0.36.2"
 # The version egui already depends on, so no new crate is added.
 ttf-parser = "0.25"
 jsonschema = { version = "0.58", default-features = false }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tungstenite = "0.30"
 mrtklib-egui-common = { path = "crates/mrtklib-egui-common" }
+mrtklib-egui-mock = { path = "crates/mrtklib-egui-mock" }
