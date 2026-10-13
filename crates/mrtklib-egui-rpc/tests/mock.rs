@@ -314,11 +314,25 @@ fn a_session_follows_start_and_stop() {
             .as_ref()
             .is_some_and(|l| l.state == State::Stopped)
     });
-    assert!(model.mode.is_none() && model.solution.is_none());
+    // The last run's mode and solution stay after the stop ...
+    assert_eq!(model.mode.as_deref(), Some("kinematic"));
+    assert!(model.solution.is_some());
     assert_eq!(
         model.lifecycle.unwrap().stop_reason,
         Some(StopReason::Request)
     );
+
+    // ... and go when the next run starts.
+    session.request(Command::Start);
+    let model = wait_for(&session, "the next start", |m| {
+        m.lifecycle
+            .as_ref()
+            .is_some_and(|l| l.state == State::Starting)
+    });
+    assert!(model.mode.is_none() && model.solution.is_none());
+    wait_for(&session, "the next run", |m| {
+        is_running(m) && m.mode.is_some()
+    });
     session.close();
 }
 
@@ -392,8 +406,6 @@ fn a_slow_session_loses_events_and_recovers_through_sync() {
         m.lifecycle
             .as_ref()
             .is_some_and(|l| l.state == State::Stopped)
-            && m.mode.is_none()
-            && m.solution.is_none()
     });
 }
 

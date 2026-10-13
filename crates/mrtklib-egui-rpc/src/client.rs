@@ -183,10 +183,11 @@ impl Client {
     /// token and check the protocol version.
     ///
     /// `token` is `None` only for a server started with `--rpc-no-auth`. `timeout` bounds
-    /// the TCP connection and every later read and write on the socket, so no call blocks
-    /// longer than that (the protocol answers lifecycle requests when they take effect,
-    /// not when the transition ends, §5). Only `ws://` is supported: protocol 0.x has no
-    /// TLS (§3). The token is used for the handshake only and not kept.
+    /// the TCP connection, every write, and each later request from its send to its
+    /// response (frames that are not the response, such as pings, do not extend it). The
+    /// protocol answers lifecycle requests when they take effect, not when the transition
+    /// ends (§5). Only `ws://` is supported: protocol 0.x has no TLS (§3). The token is
+    /// used for the handshake only and not kept.
     pub fn connect(
         url: &str,
         token: Option<&str>,
@@ -300,7 +301,8 @@ impl Client {
             Err(e) => return Err(from_websocket(e)),
         }
         let deadline = Instant::now() + self.timeout;
-        while Instant::now() < deadline {
+        loop {
+            self.limit_read(deadline)?;
             match self.ws.read() {
                 Ok(_) => {} // a frame that was already on its way
                 Err(
@@ -311,11 +313,24 @@ impl Client {
                 Err(e) => return Err(from_websocket(e)),
             }
         }
-        Err(Error::Timeout)
     }
 
-    /// Send a request and read frames until its response arrives. Parameters go by name;
-    /// methods without parameters omit them (§3).
+    /// Let the next read wait only until `deadline`, so that frames which are not the
+    /// awaited one (pings) cannot keep a request waiting longer than its timeout. A peer
+    /// that trickles fragments of one message inside a single read is not covered.
+    fn limit_read(&self, deadline: Instant) -> Result<(), Error> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        self.ws
+            .get_ref()
+            .set_read_timeout(Some(remaining))
+            .map_err(from_io)
+    }
+
+    /// Send a request and read frames until its response arrives, at most the timeout
+    /// from the send. Parameters go by name; methods without parameters omit them (§3).
     fn call<T: DeserializeOwned>(
         &mut self,
         method: &str,
@@ -327,15 +342,17 @@ impl Client {
         if let Some(params) = params {
             request["params"] = params;
         }
+        let deadline = Instant::now() + self.timeout;
         self.ws
             .send(Message::text(request.to_string()))
             .map_err(from_websocket)?;
-        let response = self.read_response()?;
+        let response = self.read_response(deadline)?;
         decode_response(response, id, method)
     }
 
-    fn read_response(&mut self) -> Result<WireResponse, Error> {
+    fn read_response(&mut self, deadline: Instant) -> Result<WireResponse, Error> {
         loop {
+            self.limit_read(deadline)?;
             match self.ws.read().map_err(from_websocket)? {
                 Message::Text(text) => {
                     return serde_json::from_str(text.as_str())
@@ -408,7 +425,7 @@ fn open_stream(uri: &Uri, timeout: Duration) -> Result<TcpStream, Error> {
         .ok_or_else(|| Error::InvalidArgument("the URL has no host".into()))?
         .trim_start_matches('[')
         .trim_end_matches(']');
-    let port = uri.port_u16().unwrap_or(80);
+    let port = url_port(uri)?;
     let mut last_error = None;
     for address in (host, port).to_socket_addrs().map_err(from_io)? {
         match TcpStream::connect_timeout(&address, timeout) {
@@ -427,6 +444,31 @@ fn open_stream(uri: &Uri, timeout: Duration) -> Result<TcpStream, Error> {
         || Error::InvalidArgument(format!("the host {host} has no address")),
         from_io,
     ))
+}
+
+/// The port of a `ws://` URL: 80 (the RFC 6455 default) only when the URL has none. A
+/// port that is present but not a number up to 65535 is an error: falling back to 80 would
+/// send the token to another service.
+fn url_port(uri: &Uri) -> Result<u16, Error> {
+    let authority = uri.authority().map_or("", |authority| authority.as_str());
+    // authority = [userinfo@]host[:port], where an IPv6 host is written in brackets.
+    let host_and_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, rest)| rest);
+    let after_host = uri
+        .host()
+        .and_then(|host| host_and_port.strip_prefix(host))
+        .unwrap_or("");
+    let Some(digits) = after_host.strip_prefix(':') else {
+        return Ok(80);
+    };
+    let numeric = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    numeric
+        .then(|| digits.parse().ok())
+        .flatten()
+        .ok_or_else(|| {
+            Error::InvalidArgument("the port in the URL is not a number up to 65535".into())
+        })
 }
 
 /// The token goes into a header value that holds a comma-separated list; only the
@@ -558,10 +600,32 @@ mod tests {
     }
 
     #[test]
+    fn only_an_absent_port_defaults_to_80() {
+        let port = |url: &str| url_port(&url.parse().unwrap());
+        assert_eq!(port("ws://host/rpc").unwrap(), 80);
+        assert_eq!(port("ws://[::1]/rpc").unwrap(), 80);
+        assert_eq!(port("ws://host:8080/rpc").unwrap(), 8080);
+        assert_eq!(port("ws://[::1]:43215/rpc").unwrap(), 43215);
+        assert_eq!(port("ws://user:pw@host:81/rpc").unwrap(), 81);
+        assert_eq!(port("ws://host:65535/rpc").unwrap(), 65535);
+        for url in [
+            "ws://host:65536/rpc",
+            "ws://host:99999/rpc",
+            "ws://[::1]:99999/rpc",
+            "ws://host:/rpc",
+        ] {
+            // The URL parser accepts these (`port_u16()` is `None` for them); they must not
+            // become port 80.
+            assert!(matches!(port(url), Err(Error::InvalidArgument(_))), "{url}");
+        }
+    }
+
+    #[test]
     fn invalid_arguments_are_refused_before_connecting() {
         let timeout = Duration::from_secs(1);
         for (url, token, timeout) in [
             ("wss://127.0.0.1:1/rpc", None, timeout),
+            ("ws://127.0.0.1:99999/rpc", None, timeout),
             ("not a url", None, timeout),
             ("ws://127.0.0.1:1/rpc", Some("bad token"), timeout),
             ("ws://127.0.0.1:1/rpc", None, Duration::ZERO),

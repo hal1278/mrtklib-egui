@@ -3,6 +3,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -20,7 +21,7 @@ pub struct SessionOptions {
     /// example of the protocol document, and a client polling every 0.1-1 s loses no events
     /// in normal operation (§7).
     pub poll_interval: Duration,
-    /// Bound for connecting and for every read and write on the socket. Default 5 s.
+    /// Bound for connecting and for each request, from its send to its response. Default 5 s.
     /// Lifecycle requests are answered when they take effect, not when the transition ends
     /// (§5), so a healthy server answers quickly; 5 s leaves room for a loaded machine and
     /// still lets the GUI report a hung server. Provisional: revisit after measuring the
@@ -87,6 +88,10 @@ pub struct RequestOutcome {
 
 /// What the GUI shows. It follows the protocol's events in publish order, so it is always
 /// the state after some event.
+///
+/// `mode` and `solution` belong to the current or the last run: they are kept after the run
+/// stops, so that the final solution stays visible, and are cleared when the next run
+/// starts (a `starting` status event). The GUI decides how to show them outside `running`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Model {
     pub connection: Connection,
@@ -94,9 +99,13 @@ pub struct Model {
     pub seq: u64,
     /// `None` until the first `sync`.
     pub lifecycle: Option<Lifecycle>,
-    /// Positioning mode, while running.
+    /// Positioning mode of the current or last run. `None` before the first run, after a
+    /// `sync` outside `running` (a `sync` holds no mode then), and when a run ended before
+    /// the mode could be read.
     pub mode: Option<String>,
-    /// The latest solution event. Cleared when the state leaves `running`.
+    /// The latest solution event of the current or last run. After a `sync` outside
+    /// `running` it is `None`: the last solution is not known then (events that were lost
+    /// are not recovered, §7).
     pub solution: Option<Solution>,
     /// The newest log messages, at most [`SessionOptions::log_capacity`].
     pub log: VecDeque<LogMessage>,
@@ -136,8 +145,10 @@ impl Model {
         self.seq = event.seq;
         match event.data {
             EventData::Status(lifecycle) => {
-                // Outside `running` the status holds only the lifecycle (§6).
-                if lifecycle.state != State::Running {
+                // A new run starts: forget the last run's mode and solution. The final
+                // solutions of a run can follow its `stopping` event (§7), so they are not
+                // cleared before that.
+                if lifecycle.state == State::Starting {
                     self.mode = None;
                     self.solution = None;
                 }
@@ -158,9 +169,17 @@ impl Model {
 struct Shared {
     model: Mutex<Model>,
     notify: Box<dyn Fn() + Send + Sync>,
+    /// Set by the owner before it sends `Close`. The worker looks at it before every
+    /// request it sends, so a stop is not delayed by queued commands or by repeated
+    /// recovery from lost events.
+    stop: AtomicBool,
 }
 
 impl Shared {
+    fn stopping(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
     fn lock(&self) -> MutexGuard<'_, Model> {
         // The lock is held only for short updates that cannot panic; a poisoned lock would
         // be a bug, and stopping is better than showing a model that stopped changing.
@@ -214,6 +233,7 @@ impl Session {
         let shared = Arc::new(Shared {
             model: Mutex::new(Model::default()),
             notify: Box::new(notify),
+            stop: AtomicBool::new(false),
         });
         let (sender, receiver) = mpsc::channel();
         let worker = {
@@ -285,15 +305,17 @@ impl Session {
         (self.shared.notify)();
     }
 
-    /// Stop the worker: it closes the WebSocket normally, then this call returns. The wait
-    /// is bounded by about twice the timeout, because the worker looks at the stop request
-    /// at least once per poll interval and each socket operation is bounded by it.
+    /// Stop the worker: it closes the WebSocket normally, then this call returns. The
+    /// worker looks at the stop request before every request it sends, and each request
+    /// and the closing are bounded by the timeout, so the wait is bounded by about twice
+    /// the timeout. Requests that were queued but not sent are recorded as not sent.
     pub fn close(mut self) {
         self.stop_worker();
     }
 
     fn stop_worker(&mut self) {
-        // A failed send means that the worker has ended already.
+        self.shared.stop.store(true, Ordering::SeqCst);
+        // `Close` wakes the worker if it waits; a failed send means that it has ended.
         let _ = self.sender.send(Message::Close);
         if let Some(worker) = self.worker.take() {
             // A panic of the worker was reported by the panic hook; nothing more to do here.
@@ -368,6 +390,9 @@ impl Worker<'_> {
     fn serve(&mut self, poll_interval: Duration) -> Result<(), Error> {
         let mut next_poll = Instant::now() + poll_interval;
         loop {
+            if self.shared.stopping() {
+                return Ok(());
+            }
             let wait = next_poll.saturating_duration_since(Instant::now());
             match self.receiver.recv_timeout(wait) {
                 Ok(message) => {
@@ -390,6 +415,11 @@ impl Worker<'_> {
     fn handle(&mut self, message: Message) -> Result<Flow, Error> {
         match message {
             Message::Close => Ok(Flow::Stop),
+            Message::Request(command) if self.shared.stopping() => {
+                self.shared
+                    .update(|model| model.last_request = Some(not_sent(command)));
+                Ok(Flow::Stop)
+            }
             Message::Request(command) => self.execute(command).map(|()| Flow::Continue),
         }
     }
@@ -420,6 +450,9 @@ impl Worker<'_> {
     /// Fetch events until none are ready now; handle requests that arrive in between.
     fn poll(&mut self) -> Result<Flow, Error> {
         loop {
+            if self.shared.stopping() {
+                return Ok(Flow::Stop);
+            }
             let page = self.client.get_events(self.cursor, None)?;
             if page.lost {
                 self.shared.update(|model| model.lost_events += 1);
@@ -529,15 +562,21 @@ mod tests {
     }
 
     #[test]
-    fn leaving_running_clears_mode_and_solution() {
+    fn mode_and_solution_stay_after_the_run_stops_and_go_when_the_next_starts() {
         let mut model = Model::default();
         model.apply_event(status_event(1, "running"), 10);
         model.mode = Some("kinematic".into());
         model.apply_event(solution_event(2), 10);
-        assert!(model.solution.is_some());
         model.apply_event(status_event(3, "stopping"), 10);
+        // A final solution of the run can follow `stopping` (§7).
+        model.apply_event(solution_event(4), 10);
+        model.apply_event(status_event(5, "stopped"), 10);
+        assert_eq!(model.mode.as_deref(), Some("kinematic"));
+        assert!(model.solution.is_some());
+        assert_eq!(model.seq, 5);
+
+        model.apply_event(status_event(6, "starting"), 10);
         assert_eq!((model.mode.clone(), model.solution.clone()), (None, None));
-        assert_eq!(model.seq, 3);
     }
 
     #[test]

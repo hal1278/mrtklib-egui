@@ -2,10 +2,11 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use mrtklib_egui_rpc::{Client, Connection, Error, Session, SessionOptions};
+use mrtklib_egui_rpc::{Client, Command, Connection, Error, Model, Session, SessionOptions, State};
 use serde_json::{Value, json};
 use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::HeaderValue;
@@ -220,6 +221,31 @@ fn a_silent_server_times_out() {
     server.join().unwrap();
 }
 
+#[test]
+fn pings_without_a_response_cannot_keep_a_request_waiting() {
+    let (url, server) = fake_server("mrtk-rpc", |mut ws| {
+        answer_version(&mut ws, "0.1");
+        let _ = read_request(&mut ws);
+        // Ping more often than the client's socket timeout, and never answer.
+        let end = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < end && ws.send(Message::Ping(vec![0].into())).is_ok() {
+            thread::sleep(Duration::from_millis(20));
+        }
+    });
+    let (mut client, _) = Client::connect(&url, None, Duration::from_millis(300)).unwrap();
+    let begun = Instant::now();
+    let error = client.get_status().unwrap_err();
+    assert!(matches!(error, Error::Timeout), "{error:?}");
+    // One deadline per request: about the timeout, not the length of the ping stream.
+    assert!(
+        begun.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        begun.elapsed()
+    );
+    drop(client);
+    server.join().unwrap();
+}
+
 /// A server that accepts the TCP connection and runs `script` on the raw stream.
 fn raw_server(script: impl FnOnce(TcpStream) + Send + 'static) -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -359,6 +385,157 @@ fn a_session_takes_only_the_mode_from_a_status_response_and_discards_a_stale_one
     // The unknown event was skipped, and the session goes on.
     assert_eq!(model.seq, 6);
     assert!(matches!(model.connection, Connection::Connected { .. }));
+    drop(session);
+    server.join().unwrap();
+}
+
+fn wait_for(session: &Session, what: &str, done: impl Fn(&Model) -> bool) -> Model {
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let model = session.model();
+        if done(&model) {
+            return model;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {model:#?}"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Close the session on another thread and fail, instead of hanging, when it takes longer
+/// than `bound`.
+fn close_within(session: Session, bound: Duration) {
+    let (done, finished) = mpsc::channel();
+    thread::spawn(move || {
+        session.close();
+        let _ = done.send(());
+    });
+    assert!(
+        finished.recv_timeout(bound).is_ok(),
+        "close took longer than {bound:?}"
+    );
+}
+
+fn quick() -> SessionOptions {
+    SessionOptions {
+        poll_interval: Duration::from_millis(10),
+        timeout: TIMEOUT,
+        ..SessionOptions::default()
+    }
+}
+
+fn stopped_status() -> Value {
+    json!({ "seq": 0, "status": { "lifecycle": { "state": "stopped" } } })
+}
+
+#[test]
+fn close_is_not_starved_by_repeated_lost_events() {
+    let (url, server) = fake_server("mrtk-rpc", |mut ws| {
+        answer_version(&mut ws, "0.1");
+        serve(&mut ws, |method, params| match method {
+            "sync" => stopped_status(),
+            "getEvents" => json!({
+                "events": [], "next": params["after"], "more": false, "lost": true,
+                "oldestSeq": 9
+            }),
+            other => panic!("unexpected method {other}"),
+        });
+    });
+    let session = Session::spawn(url, None, quick(), || {});
+    wait_for(&session, "repeated recovery", |m| m.lost_events >= 3);
+    close_within(session, Duration::from_secs(3));
+    server.join().unwrap();
+}
+
+#[test]
+fn close_does_not_wait_for_queued_requests() {
+    let (url, server) = fake_server("mrtk-rpc", |mut ws| {
+        answer_version(&mut ws, "0.1");
+        serve(&mut ws, |method, params| match method {
+            "sync" => stopped_status(),
+            "getEvents" => {
+                json!({ "events": [], "next": params["after"], "more": false, "lost": false })
+            }
+            "start" => {
+                thread::sleep(Duration::from_millis(30));
+                json!({ "seq": 1 })
+            }
+            other => panic!("unexpected method {other}"),
+        });
+    });
+    let session = Session::spawn(url, None, quick(), || {});
+    wait_for(&session, "the first sync", |m| m.lifecycle.is_some());
+    // Sent one after the other these would take 3 s.
+    for _ in 0..100 {
+        session.request(Command::Start);
+    }
+    close_within(session, Duration::from_millis(1500));
+    server.join().unwrap();
+}
+
+#[test]
+fn a_session_keeps_the_last_solution_after_stopping_until_the_next_run_starts() {
+    let solution = |tow: f64| json!({ "time": { "week": 1, "tow": tow }, "leapSeconds": 18, "status": "none" });
+    let (release, released) = mpsc::channel::<()>();
+    let (url, server) = fake_server("mrtk-rpc", move |mut ws| {
+        answer_version(&mut ws, "0.1");
+        serve(&mut ws, |method, params| {
+            match (method, params["after"].as_u64()) {
+                ("sync", _) => json!({
+                    "seq": 0,
+                    "status": {
+                        "lifecycle": { "state": "running" },
+                        "mode": "kinematic",
+                        "solution": solution(1.0)
+                    }
+                }),
+                // The run's final solution follows the `stopping` event (README §7).
+                ("getEvents", Some(0)) => json!({
+                    "events": [
+                        { "seq": 1, "kind": "status",
+                          "data": { "state": "stopping", "stopReason": "request" } },
+                        { "seq": 2, "kind": "solution", "data": solution(2.0) },
+                        { "seq": 3, "kind": "status",
+                          "data": { "state": "stopped", "stopReason": "request" } }
+                    ],
+                    "next": 3, "more": false, "lost": false
+                }),
+                // The next run starts only when the test says so.
+                ("getEvents", Some(3)) => {
+                    released
+                        .recv_timeout(TIMEOUT)
+                        .expect("the test releases the server");
+                    json!({
+                        "events": [{ "seq": 4, "kind": "status", "data": { "state": "starting" } }],
+                        "next": 4, "more": false, "lost": false
+                    })
+                }
+                ("getEvents", Some(after)) => {
+                    json!({ "events": [], "next": after, "more": false, "lost": false })
+                }
+                (other, _) => panic!("unexpected method {other}"),
+            }
+        });
+    });
+    let session = Session::spawn(url, None, quick(), || {});
+    let model = wait_for(&session, "the stop", |m| {
+        m.lifecycle
+            .as_ref()
+            .is_some_and(|l| l.state == State::Stopped)
+    });
+    assert_eq!(model.mode.as_deref(), Some("kinematic"));
+    let kept = model.solution.expect("the final solution is kept");
+    assert_eq!(kept.time.tow, 2.0);
+
+    release.send(()).unwrap();
+    let model = wait_for(&session, "the next run", |m| {
+        m.lifecycle
+            .as_ref()
+            .is_some_and(|l| l.state == State::Starting)
+    });
+    assert!(model.mode.is_none() && model.solution.is_none());
     drop(session);
     server.join().unwrap();
 }
