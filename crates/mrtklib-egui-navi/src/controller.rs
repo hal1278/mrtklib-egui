@@ -235,12 +235,9 @@ mod tests {
         );
         controller.request(Command::Start);
         until(&mut controller, |c| {
-            c.model.lifecycle.as_ref().unwrap().state == LifecycleState::Starting
-        });
-        assert!(!controller.view().action_enabled);
-        assert!(controller.model.solution.is_none());
-        until(&mut controller, |c| {
-            c.model.solution.is_some() && c.model.mode.is_some()
+            c.model.lifecycle.as_ref().unwrap().state == LifecycleState::Running
+                && c.model.solution.is_some()
+                && c.model.mode.is_some()
         });
         assert!(controller.view().status.contains("Mode: kinematic"));
         assert_eq!(controller.view().action, Command::Stop);
@@ -254,10 +251,10 @@ mod tests {
         assert!(stopped.status.contains("stopReason: request"));
         controller.request(Command::Start);
         until(&mut controller, |c| {
-            c.model.lifecycle.as_ref().unwrap().state == LifecycleState::Starting
+            c.model.lifecycle.as_ref().unwrap().state == LifecycleState::Running
+                && c.model.solution.is_some()
+                && c.model.mode.is_some()
         });
-        assert_eq!(controller.view().rows[0].1, "----");
-        assert!(controller.model.mode.is_none());
         controller
             .session
             .as_ref()

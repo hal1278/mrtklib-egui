@@ -7,15 +7,30 @@ const DAY_MS: i64 = 86_400_000;
 const GPS_EPOCH_UNIX_DAYS: i64 = 3657;
 
 pub(crate) fn format(time: GpsTime, leap_seconds: i32) -> [String; 2] {
+    checked_format(time, leap_seconds)
+        .unwrap_or_else(|| ["GPST invalid time".into(), "UTC invalid time".into()])
+}
+
+fn checked_format(time: GpsTime, leap_seconds: i32) -> Option<[String; 2]> {
+    // Validate the unrounded contract value: a valid final millisecond may carry
+    // into the next week, but 604800 itself is not a valid time of week.
+    if !time.tow.is_finite() || !(0.0..604_800.0).contains(&time.tow) {
+        return None;
+    }
     // Round before splitting fields so carries cross seconds, days and GPS weeks.
-    let gps_ms = i64::from(time.week) * WEEK_MS + (time.tow * 1000.0).round() as i64;
+    // The validated range bounds the rounded float to 0..=WEEK_MS, so its cast
+    // cannot saturate. Keep the accumulated epoch arithmetic checked as well.
+    let gps_ms = i64::from(time.week)
+        .checked_mul(WEEK_MS)?
+        .checked_add((time.tow * 1000.0).round() as i64)?;
     let week = gps_ms.div_euclid(WEEK_MS);
     let tow = gps_ms.rem_euclid(WEEK_MS);
-    let utc_ms = gps_ms - i64::from(leap_seconds) * 1000;
-    let (year, month, day) = civil_date(utc_ms.div_euclid(DAY_MS) + GPS_EPOCH_UNIX_DAYS);
+    let utc_ms = gps_ms.checked_sub(i64::from(leap_seconds).checked_mul(1000)?)?;
+    let (year, month, day) =
+        civil_date(utc_ms.div_euclid(DAY_MS).checked_add(GPS_EPOCH_UNIX_DAYS)?);
     let clock = utc_ms.rem_euclid(DAY_MS);
     let seconds = clock / 1000;
-    [
+    Some([
         format!("GPST {week} {}.{:03}", tow / 1000, tow % 1000),
         format!(
             "UTC {year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
@@ -24,7 +39,7 @@ pub(crate) fn format(time: GpsTime, leap_seconds: i32) -> [String; 2] {
             seconds % 60,
             clock % 1000
         ),
-    ]
+    ])
 }
 
 /// Gregorian civil date from days since 1970-01-01. Split into 400-year eras,
@@ -59,6 +74,51 @@ mod tests {
             ["GPST 0 0.000", "UTC 1980-01-06T00:00:00.000Z"]
         );
         assert_eq!(at(0, 0.123, 18)[1], "UTC 1980-01-05T23:59:42.123Z");
+    }
+
+    #[test]
+    fn invalid_time_of_week_shows_placeholders_without_overflow() {
+        for tow in [
+            f64::MAX,
+            1.0e20,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::MAX,
+            -1.0,
+            -f64::MIN_POSITIVE,
+            604_800.0,
+            604_800.001,
+        ] {
+            for week in [0, u32::MAX] {
+                for leap in [i32::MIN, 0, i32::MAX] {
+                    assert_eq!(
+                        at(week, tow, leap),
+                        ["GPST invalid time", "UTC invalid time"],
+                        "week={week}, tow={tow}, leap={leap}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn valid_boundaries_preserve_week_and_leap_seconds() {
+        let before_week_end = f64::from_bits(604_800.0_f64.to_bits() - 1);
+        assert_eq!(at(0, before_week_end, 0)[0], "GPST 1 0.000");
+        assert_eq!(at(u32::MAX, 604_799.999_6, 0)[0], "GPST 4294967296 0.000");
+        assert_eq!(at(0, f64::MIN_POSITIVE, 0)[0], "GPST 0 0.000");
+        for week in [0, u32::MAX] {
+            for tow in [0.0, before_week_end] {
+                let baseline = at(week, tow, 0);
+                for leap in [i32::MIN, i32::MAX] {
+                    let offset = at(week, tow, leap);
+                    assert_eq!(offset[0], baseline[0]);
+                    assert_ne!(offset[1], "UTC invalid time");
+                    assert_ne!(offset[1], baseline[1]);
+                }
+            }
+        }
     }
 
     #[test]

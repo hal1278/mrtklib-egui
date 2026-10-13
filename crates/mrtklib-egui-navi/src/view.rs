@@ -411,6 +411,31 @@ mod tests {
     }
 
     #[test]
+    fn starting_model_shows_disabled_stop_and_cleared_solution() {
+        // Session clears the previous run's solution and mode on Starting.
+        // Construct that model directly rather than racing a live event poll.
+        let mut model = model(State::Starting);
+        model.solution = None;
+        model.mode = None;
+        let view = show(&model);
+        assert_eq!(view.action, Command::Stop);
+        assert_eq!(view.action_label, "Stop");
+        assert!(!view.action_enabled);
+        assert_eq!(view.solution, "----");
+        assert_eq!(view.times, ["GPST ---- ----.---", "UTC ----"]);
+        assert_eq!(view.rows[0].1, "----");
+        assert_eq!(view.rows[1].1, "----");
+        assert_eq!(view.rows[2].1, "---- m");
+        assert_eq!(view.rows[3].1, "E:---- N:---- U:---- m");
+        assert_eq!(view.quality, "Age:---- s Ratio:---- #Sat:--");
+        assert_eq!(view.time_color, GRAY);
+        assert_eq!(view.solution_color, GRAY);
+        assert_eq!(view.indicator, WHITE);
+        assert!(view.status.contains("Lifecycle: starting"));
+        assert!(!view.status.contains("Mode:"));
+    }
+
+    #[test]
     fn button_swapping_requires_connected_stable_lifecycle() {
         for (state, label, enabled) in [
             (State::Stopped, "Start", true),
