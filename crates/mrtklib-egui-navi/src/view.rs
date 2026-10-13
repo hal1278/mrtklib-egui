@@ -69,8 +69,8 @@ pub(crate) fn build(
             WHITE
         },
         rows: [
-            ("N:".into(), "----".into()),
-            ("E:".into(), "----".into()),
+            ("Lat:".into(), "----".into()),
+            ("Lon:".into(), "----".into()),
             ("He:".into(), "---- m".into()),
             ("σ".into(), "E:---- N:---- U:---- m".into()),
         ],
@@ -96,14 +96,8 @@ pub(crate) fn build(
     {
         if let Some(position) = s.position {
             let llh = position.llh;
-            view.rows[0] = (
-                if llh.lat < 0.0 { "S:" } else { "N:" }.into(),
-                format!("{:.8}°", llh.lat.abs()),
-            );
-            view.rows[1] = (
-                if llh.lon < 0.0 { "W:" } else { "E:" }.into(),
-                format!("{:.8}°", llh.lon.abs()),
-            );
+            view.rows[0].1 = format!("{:.8}°", llh.lat);
+            view.rows[1].1 = format!("{:.8}°", llh.lon);
             view.rows[2].1 = format!("{:.3} m", llh.height);
         }
         if let Some(covariance) = s.covariance {
@@ -328,8 +322,8 @@ mod tests {
     #[test]
     fn exact_position_uncertainty_and_quality_formats() {
         let view = show(&model(State::Running));
-        assert_eq!(view.rows[0], ("S:".into(), "35.12345679°".into()));
-        assert_eq!(view.rows[1], ("W:".into(), "139.12345679°".into()));
+        assert_eq!(view.rows[0], ("Lat:".into(), "-35.12345679°".into()));
+        assert_eq!(view.rows[1], ("Lon:".into(), "-139.12345679°".into()));
         assert_eq!(view.rows[2], ("He:".into(), "12.346 m".into()));
         assert_eq!(view.rows[3].1, "E: 2.000 N: 0.000 U: 0.020 m");
         assert_eq!(view.quality, "Age: 1.2 s Ratio: 3.6 #Sat: 9");
@@ -348,11 +342,11 @@ mod tests {
         };
         assert_eq!(
             show(&north_east).rows[0],
-            ("N:".into(), "35.00000000°".into())
+            ("Lat:".into(), "35.00000000°".into())
         );
         assert_eq!(
             show(&north_east).rows[1],
-            ("E:".into(), "139.00000000°".into())
+            ("Lon:".into(), "139.00000000°".into())
         );
     }
 
