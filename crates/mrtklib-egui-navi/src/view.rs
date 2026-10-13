@@ -55,7 +55,7 @@ pub(crate) fn build(
         Command::Stop
     };
     let mut view = View {
-        times: model.solution.as_ref().map_or_else(
+        times: model.last_valid_solution.as_ref().map_or_else(
             || ["GPST ---- ----.---".into(), "UTC ----".into()],
             |s| time::format(s.time, s.leap_seconds),
         ),
@@ -90,10 +90,7 @@ pub(crate) fn build(
         exit_label: "Exit".into(),
         status: status_line(model, process, preview, launch_error, closing),
     };
-    // Even a malformed none solution carrying old coordinates cannot show them.
-    if let Some(s) = &model.solution
-        && s.status != SolutionStatus::None
-    {
+    if let Some(s) = &model.last_valid_solution {
         if let Some(position) = s.position {
             let llh = position.llh;
             view.rows[0].1 = format!("{:.8}°", llh.lat);
@@ -255,7 +252,7 @@ mod tests {
     use std::collections::VecDeque;
 
     fn model(state: State) -> Model {
-        Model {
+        let mut model = Model {
             connection: Connection::Connected {
                 version: Version {
                     protocol_version: "0.1".into(),
@@ -312,7 +309,9 @@ mod tests {
                 base: None,
             }),
             ..Model::default()
-        }
+        };
+        model.last_valid_solution = model.solution.clone();
+        model
     }
 
     fn show(model: &Model) -> View {
@@ -329,7 +328,7 @@ mod tests {
         assert_eq!(view.quality, "Age: 1.2 s Ratio: 3.6 #Sat: 9");
         let mut north_east = model(State::Running);
         north_east
-            .solution
+            .last_valid_solution
             .as_mut()
             .unwrap()
             .position
@@ -388,8 +387,42 @@ mod tests {
     }
 
     #[test]
-    fn none_solution_never_shows_old_coordinates_or_quality() {
+    fn none_keeps_the_last_valid_display_but_uses_the_current_status() {
         let mut model = model(State::Running);
+        let fix = show(&model);
+        let latest = model.solution.as_mut().unwrap();
+        latest.status = SolutionStatus::None;
+        latest.time.tow = 10.0;
+        latest.position = None;
+        latest.covariance = None;
+        latest.age = None;
+        latest.ratio = None;
+        latest.valid_satellites = None;
+        let none = show(&model);
+        assert_eq!(none.times, fix.times);
+        assert_eq!(none.rows, fix.rows);
+        assert_eq!(none.quality, fix.quality);
+        assert_eq!(none.solution, "----");
+        assert_eq!(none.solution_color, [192, 192, 192]);
+        assert_eq!(none.indicator, WHITE);
+        assert_eq!(none.time_color, BLACK);
+
+        model.lifecycle.as_mut().unwrap().state = State::Stopped;
+        let stopped = show(&model);
+        assert_eq!(stopped.times, fix.times);
+        assert_eq!(stopped.rows, fix.rows);
+        assert_eq!(stopped.quality, fix.quality);
+        assert_eq!(stopped.solution, "----");
+        assert_eq!(stopped.solution_color, GRAY);
+        assert_eq!(stopped.time_color, GRAY);
+        assert_eq!(stopped.indicator, WHITE);
+    }
+
+    #[test]
+    fn none_before_a_valid_solution_shows_only_placeholders() {
+        let mut model = model(State::Running);
+        model.last_valid_solution = None;
+        // Even a malformed NONE carrying coordinates and quality cannot show them.
         model.solution.as_mut().unwrap().status = SolutionStatus::None;
         let none = show(&model);
         assert_eq!(none.rows[0].1, "----");
@@ -397,8 +430,7 @@ mod tests {
         assert_eq!(none.rows[2].1, "---- m");
         assert_eq!(none.rows[3].1, "E:---- N:---- U:---- m");
         assert_eq!(none.quality, "Age:---- s Ratio:---- #Sat:--");
-        // The epoch is known even when there are no valid coordinates.
-        assert_eq!(none.times[0], "GPST 0 0.123");
+        assert_eq!(none.times, ["GPST ---- ----.---", "UTC ----"]);
         model.solution = None;
         assert_eq!(show(&model).rows, none.rows);
         assert_eq!(show(&model).times[0], "GPST ---- ----.---");
@@ -406,10 +438,11 @@ mod tests {
 
     #[test]
     fn starting_model_shows_disabled_stop_and_cleared_solution() {
-        // Session clears the previous run's solution and mode on Starting.
+        // Session clears both solutions and the previous run's mode on Starting.
         // Construct that model directly rather than racing a live event poll.
         let mut model = model(State::Starting);
         model.solution = None;
+        model.last_valid_solution = None;
         model.mode = None;
         let view = show(&model);
         assert_eq!(view.action, Command::Stop);

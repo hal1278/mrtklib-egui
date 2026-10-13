@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use crate::client::{Client, Error, RpcError};
 use crate::types::{
-    Event, EventData, EventPage, Lifecycle, LogMessage, Snapshot, Solution, State, Version,
+    Event, EventData, EventPage, Lifecycle, LogMessage, Snapshot, Solution, SolutionStatus, State,
+    Version,
 };
 
 /// Timing and size settings of a [`Session`]. The defaults are provisional.
@@ -89,9 +90,10 @@ pub struct RequestOutcome {
 /// What the GUI shows. It follows the protocol's events in publish order, so it is always
 /// the state after some event.
 ///
-/// `mode` and `solution` belong to the current or the last run: they are kept after the run
-/// stops, so that the final solution stays visible, and are cleared when the next run
-/// starts (a `starting` status event). The GUI decides how to show them outside `running`.
+/// `mode`, `solution` and `last_valid_solution` belong to the current or the last run:
+/// they are kept after the run stops, so that the final display stays visible, and are
+/// cleared when the next run starts (a `starting` status event). The GUI decides how to
+/// show them outside `running`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Model {
     pub connection: Connection,
@@ -103,10 +105,15 @@ pub struct Model {
     /// `sync` outside `running` (a `sync` holds no mode then), and when a run ended before
     /// the mode could be read.
     pub mode: Option<String>,
-    /// The latest solution event of the current or last run. After a `sync` outside
-    /// `running` it is `None`: the last solution is not known then (events that were lost
-    /// are not recovered, §7).
+    /// The latest solution event of the current or last run, including `none`.
+    /// After a `sync` outside `running` it is `None`: the last solution is not known then
+    /// (events that were lost are not recovered, §7).
     pub solution: Option<Solution>,
+    /// The latest solution whose status is not `none`, retained per event even when a
+    /// later event in the same page is `none`. Cleared on `starting`. A `sync` replaces
+    /// it with the snapshot's non-`none` solution, or `None`: earlier valid solutions
+    /// are not known because missing events are not recovered (§7).
+    pub last_valid_solution: Option<Solution>,
     /// The newest log messages, at most [`SessionOptions::log_capacity`].
     pub log: VecDeque<LogMessage>,
     /// How many times `getEvents` reported lost events. The number of missing events is
@@ -124,6 +131,7 @@ impl Default for Model {
             lifecycle: None,
             mode: None,
             solution: None,
+            last_valid_solution: None,
             log: VecDeque::new(),
             lost_events: 0,
             last_request: None,
@@ -138,6 +146,11 @@ impl Model {
         self.lifecycle = Some(snapshot.status.lifecycle);
         self.mode = snapshot.status.mode;
         self.solution = snapshot.status.solution;
+        self.last_valid_solution = self
+            .solution
+            .as_ref()
+            .filter(|s| s.status != SolutionStatus::None)
+            .cloned();
     }
 
     /// Apply one event (§7). An event of an unknown kind is skipped (§4).
@@ -151,10 +164,16 @@ impl Model {
                 if lifecycle.state == State::Starting {
                     self.mode = None;
                     self.solution = None;
+                    self.last_valid_solution = None;
                 }
                 self.lifecycle = Some(lifecycle);
             }
-            EventData::Solution(solution) => self.solution = Some(solution),
+            EventData::Solution(solution) => {
+                if solution.status != SolutionStatus::None {
+                    self.last_valid_solution = Some(solution.clone());
+                }
+                self.solution = Some(solution);
+            }
             EventData::LogMessage(message) => {
                 self.log.push_back(message);
                 while self.log.len() > log_capacity {
@@ -550,10 +569,15 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
-    fn solution_event(seq: u64) -> Event {
+    fn solution_event(seq: u64, status: &str) -> Event {
+        let position = (status != "none").then(|| {
+            json!({ "ecef": { "x": 1.0, "y": 2.0, "z": 3.0 },
+                    "llh": { "lat": 35.0, "lon": 139.0, "height": 12.0 } })
+        });
         event(json!({
             "seq": seq, "kind": "solution",
-            "data": { "time": { "week": 1, "tow": 1.0 }, "leapSeconds": 18, "status": "none" }
+            "data": { "time": { "week": 1, "tow": seq as f64 }, "leapSeconds": 18,
+                      "status": status, "position": position }
         }))
     }
 
@@ -566,17 +590,85 @@ mod tests {
         let mut model = Model::default();
         model.apply_event(status_event(1, "running"), 10);
         model.mode = Some("kinematic".into());
-        model.apply_event(solution_event(2), 10);
+        model.apply_event(solution_event(2, "fix"), 10);
         model.apply_event(status_event(3, "stopping"), 10);
         // A final solution of the run can follow `stopping` (§7).
-        model.apply_event(solution_event(4), 10);
+        model.apply_event(solution_event(4, "fix"), 10);
         model.apply_event(status_event(5, "stopped"), 10);
         assert_eq!(model.mode.as_deref(), Some("kinematic"));
         assert!(model.solution.is_some());
+        assert_eq!(model.last_valid_solution, model.solution);
+        assert_eq!(model.last_valid_solution.as_ref().unwrap().time.tow, 4.0);
         assert_eq!(model.seq, 5);
 
         model.apply_event(status_event(6, "starting"), 10);
         assert_eq!((model.mode.clone(), model.solution.clone()), (None, None));
+        assert!(model.last_valid_solution.is_none());
+    }
+
+    #[test]
+    fn fix_then_none_in_one_page_keeps_the_last_valid_solution() {
+        let page = EventPage {
+            events: vec![solution_event(1, "fix"), solution_event(2, "none")],
+            next: 2,
+            more: false,
+            lost: false,
+            oldest_seq: None,
+        };
+        let mut model = Model::default();
+        // The worker applies the whole page before the UI reads its model copy.
+        for event in page.events {
+            model.apply_event(event, 10);
+        }
+        let latest = model.solution.as_ref().unwrap();
+        assert_eq!(latest.status, SolutionStatus::None);
+        assert_eq!(latest.time.tow, 2.0);
+        let valid = model.last_valid_solution.as_ref().unwrap();
+        assert_eq!(valid.status, SolutionStatus::Fix);
+        assert_eq!(valid.time.tow, 1.0);
+        assert!(valid.position.is_some());
+        assert_eq!(model.seq, 2);
+
+        model.apply_event(status_event(3, "starting"), 10);
+        assert!(model.solution.is_none());
+        assert!(model.last_valid_solution.is_none());
+    }
+
+    #[test]
+    fn sync_replaces_last_valid_solution_with_only_the_snapshot_solution() {
+        for status in [Some("fix"), Some("none"), None] {
+            let mut model = Model::default();
+            model.apply_event(solution_event(1, "fix"), 10);
+            let solution = status.map(|status| {
+                json!({ "time": { "week": 2, "tow": 3.0 }, "leapSeconds": 18,
+                        "status": status })
+            });
+            let snapshot = serde_json::from_value(json!({
+                "seq": 10,
+                "status": { "lifecycle": { "state": "running" },
+                            "mode": "kinematic", "solution": solution }
+            }))
+            .unwrap();
+            model.apply_snapshot(snapshot);
+            assert_eq!(model.seq, 10);
+            assert_eq!(
+                model.solution.as_ref().map(|s| s.time.week),
+                status.map(|_| 2)
+            );
+            assert_eq!(
+                model.solution.as_ref().map(|s| s.status),
+                status.map(|s| if s == "fix" {
+                    SolutionStatus::Fix
+                } else {
+                    SolutionStatus::None
+                })
+            );
+            if status == Some("fix") {
+                assert_eq!(model.last_valid_solution, model.solution);
+            } else {
+                assert!(model.last_valid_solution.is_none());
+            }
+        }
     }
 
     #[test]
