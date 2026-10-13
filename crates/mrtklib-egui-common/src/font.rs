@@ -1,11 +1,12 @@
 //! The fonts: on Windows the ones RTKLIB shows, elsewhere egui's fonts plus a CJK font.
 //!
 //! egui draws text itself and has no OS font fallback; it uses an ordered list of fonts per
-//! family. RTKLIB's forms use Tahoma, and on Japanese Windows the font linked to Tahoma for
-//! Japanese is MS UI Gothic. On Windows both are taken as they are, without further
-//! candidates: a Japanese Windows environment is assumed to have them. Elsewhere egui's
-//! built-in fonts stay first and a CJK font is added for Japanese text. No font is bundled.
-//! Font collections (`.ttc`) hold several faces, so each font names the family of its face.
+//! family. RTKLIB's forms use Tahoma, and on Japanese Windows the first font linked to Tahoma
+//! (`FontLink\SystemLink` in the registry) is MS UI Gothic. On Windows both are taken as they
+//! are, without further candidates: a Japanese Windows environment is assumed to have them.
+//! Elsewhere egui's built-in fonts stay first and a CJK font is added for Japanese text. No
+//! font is bundled. Font collections (`.ttc`) hold several faces, so each font names the
+//! family of its face.
 
 use eframe::egui::{FontData, FontDefinitions, FontFamily};
 use std::path::PathBuf;
