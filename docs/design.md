@@ -65,7 +65,7 @@ The toolkit is egui for now and may change.
   Rationale: value tables, defaults and validation are not reimplemented per frontend; a hand-written implementation drifts and drops unknown keys.
 - The GUI never parses human-readable MRTKLIB output (console text, stderr progress lines, log messages) to obtain state. Showing such text as-is is fine. Information that exists only as human-readable text is a candidate for the MRTKLIB machine interface and is raised there instead of being parsed.
   Rationale: removing this kind of parsing from frontends is the purpose of the machine interface.
-- The protocol is versioned. The GUI pins the major version it supports.
+- The protocol is versioned. From 1.0 the GUI checks the major version it supports; while the protocol is 0.x, where any change may be incompatible, it accepts only the exact version it was built for.
 - Exact method names, option names, environment variable names and line formats are defined by MRTKLIB `docs/rpc/` (protocol 0.1 is drafted in the fork that implements the RPC; the RPC itself is not implemented yet). RPC method, field and event names keep the spelling of `docs/rpc/`; Rust code applies only mechanical case conversion, so that code and schema can be compared directly.
 
 ### Allowed in the GUI
@@ -87,7 +87,7 @@ These are part of the GUI's job:
 
 - `mrtk` is bundled next to the GUI executables, and the GUI uses that copy by default. A user setting can select another `mrtk`. `mrtk` on PATH is not used by default.
   Rationale: users start the GUI like RTKLIB, without a separate install; the user setting allows trying development builds.
-- The GUI shows the path and version of the `mrtk` in use. If that `mrtk` speaks a protocol major version the GUI does not support, the GUI shows an error message and does not use it.
+- The GUI shows the path and version of the `mrtk` in use. If that `mrtk` speaks a protocol version the GUI does not support, the GUI shows an error message and does not use it.
 - During the prototype, the bundled `mrtk` is built from the fork that implements the RPC (`hal1278/MRTKLIB`). After upstream merges it, it is built from upstream.
 
 ## `mrtk run` session
@@ -117,6 +117,19 @@ Each connection starts with an initial synchronization. Events missed while disc
 - The mock is used by tests and during development only; the applications do not depend on it.
 - Dependencies: `tungstenite` (a WebSocket implementation with a blocking API, so the mock needs no async runtime) and, for the tests only, `jsonschema` with its default features off (no fetching of external `$ref` targets over HTTP).
 - Differences from `mrtk run` in the executable: it does not generate a token when none is given and does not print the `--rpc-no-auth` warning. Its behavior options (start failure, input end, timing) are fixed for the whole process.
+
+## RPC client
+
+- `mrtklib-egui-rpc` is the client of the protocol 0.1 RPC, used by the GUI applications and tested against the mock server. It depends on no GUI toolkit and starts no process (that is the process supervisor's job).
+- `Client` is one blocking connection that sends one request at a time and returns typed results. A JSON-RPC error carries `reason` and `state`; callers branch on `reason`, never on `message`. `Session` runs a `Client` on a worker thread and keeps a model that the UI reads, as a copy, on every frame; the application passes a callback (a repaint request) that tells it when the model changed.
+  Rationale: blocking `tungstenite` on a thread needs no async runtime, as in the mock, and keeps macOS possible. A model behind a mutex has no queue that could grow without bound when the UI is slow.
+- The session pulls: `sync` once, then `getEvents` every poll interval, and again at once while more events are ready. When events are lost it calls `sync` again; the lifecycle is recovered, the missing solutions and log messages are not. The model follows the events in publish order. After a `running` event it asks `getStatus` and takes only the mode from the response, and discards a response older than the last status event.
+  Rationale: this is the polling that the protocol is designed for (`docs/rpc/` §7), and the model never shows a state that later events undo.
+- While the protocol is 0.x the client accepts only version 0.1 exactly; from 1.0 it checks the major version.
+  Rationale: any 0.x change may be incompatible (`docs/rpc/` §4), so a client built for 0.1 cannot know that a later 0.x is safe.
+- Provisional values: poll interval 100 ms (the protocol's example; a client polling every 0.1 to 1 s loses no events in normal operation). Timeout 5 s for connecting and for each read and write: lifecycle requests are answered when they take effect, not when the transition ends, so a healthy server answers quickly; 5 s leaves room for a loaded machine and still reports a hung server; revisit after measuring the real `mrtk run`. 1000 log messages kept, so that memory stays bounded when level-2 messages flood; set when the log panel is designed.
+- There is no automatic reconnection in the first implementation. When the connection ends, the model says why; a server that closes with status 1001 ("going away") is shown as exited, not as an error. A new connection starts with `sync`.
+- The token is used for the handshake only. It is not kept and never appears in `Debug`, `Display` or an error.
 
 ## Process supervisor
 
