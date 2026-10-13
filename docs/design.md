@@ -56,7 +56,7 @@ The toolkit is egui for now and may change.
 - The GUI never parses human-readable MRTKLIB output (console text, stderr progress lines, log messages) to obtain state. Showing such text as-is is fine. Information that exists only as human-readable text is a candidate for the MRTKLIB machine interface and is raised there instead of being parsed.
   Rationale: removing this kind of parsing from frontends is the purpose of the machine interface.
 - The protocol is versioned. The GUI pins the major version it supports.
-- Exact method names, option names, environment variable names and line formats are defined by MRTKLIB `docs/rpc/` (not written yet). RPC method, field and event names keep the spelling of `docs/rpc/`; Rust code applies only mechanical case conversion, so that code and schema can be compared directly.
+- Exact method names, option names, environment variable names and line formats are defined by MRTKLIB `docs/rpc/` (protocol 0.1 is drafted in the fork that implements the RPC; the RPC itself is not implemented yet). RPC method, field and event names keep the spelling of `docs/rpc/`; Rust code applies only mechanical case conversion, so that code and schema can be compared directly.
 
 ### Allowed in the GUI
 
@@ -95,6 +95,18 @@ These are part of the GUI's job:
    Rationale: `shutdown` saves navigation data and closes output files without OS-specific signals; the kill keeps the backend tied to the GUI lifetime even when it hangs.
 
 Each connection starts with an initial synchronization. Events missed while disconnected cannot be recovered; to record solutions, use the `mrtk` output streams (for example a solution file), not the RPC.
+
+## Mock server
+
+- `mrtklib-egui-mock` imitates the `mrtk run` RPC endpoint (protocol 0.1). GUI code and its tests use it until `mrtk` implements the RPC, and later for situations that the real server rarely produces (a failed start, lost events, protocol errors).
+  Rationale: GUI tests then run with `cargo test` alone, without MRTKLIB or another runtime.
+- It is a library, which tests start in-process, and an executable with the RPC options, the token variable and the ready line of `mrtk run`.
+- Its tests validate every message it sends against a pinned copy of MRTKLIB `docs/rpc/openrpc.json` (`crates/mrtklib-egui-mock/contract/`). The MRTKLIB contract test is planned to check the real server against the same file when the RPC is implemented; then the mock and the server cannot drift apart unnoticed.
+  Rationale: a generic OpenRPC mock follows the schema but has no state (start, then running, then solution events; `busy` during a transition; sequence numbers).
+- Positioning is simulated: a rover circling near a fixed base, going from single to float to fix, with a missing solution every 40 epochs. The values are test data, not positioning; the coordinate conversions that make them consistent stay in the mock and are not reused for display in the GUI crates.
+- The mock is used by tests and during development only; the applications do not depend on it.
+- Dependencies: `tungstenite` (a WebSocket implementation with a blocking API, so the mock needs no async runtime) and, for the tests only, `jsonschema` with its default features off (no fetching of external `$ref` targets over HTTP).
+- Differences from `mrtk run` in the executable: it does not generate a token when none is given and does not print the `--rpc-no-auth` warning. Its behavior options (start failure, input end, timing) are fixed for the whole process.
 
 ## Process supervisor
 
