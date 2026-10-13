@@ -35,9 +35,12 @@ The toolkit is egui for now and may change.
 - Functions that MRTKLIB adds (for example CLAS and MADOCA-PPP) follow the same style. The MADOCALIB GUI may serve as a reference.
 - The look is the classic light one in every OS theme, including a dark OS setting.
   Rationale: RTKLIB has no dark mode.
-- Japanese text uses a system font; no font is bundled, at least in the first implementation. Windows tries Meiryo UI, then MS Gothic, then Noto Sans JP, in the system font directory and then in the current user's font directory. The order is meant to come close to the RTKLIB applications, whose forms use Tahoma and get Japanese glyphs from the fonts that Windows links to it. The file name of Noto Sans JP on Windows is not verified. Linux uses Noto Sans CJK JP; macOS tries Hiragino (not verified). The environment variable `MRTKLIB_EGUI_CJK_FONT` names a font file instead; if that file cannot be read, the application stops.
-  Rationale: egui's built-in fonts have no CJK glyphs, and bundling a CJK font adds tens of megabytes. Font collections (`.ttc`) are searched by family name, because one file holds several faces (Meiryo and Meiryo UI, MS Gothic and MS PGothic).
-- If no font is found, the applications still start and print a warning on stderr that Japanese text cannot be shown.
+- On Windows the applications use the fonts that RTKLIB shows on Japanese Windows: Tahoma for Latin text and MS UI Gothic (in `Msgothic.ttc`) for Japanese text, the font that Windows links to Tahoma there. A Japanese Windows environment is assumed to have both; there are no further candidates, at least in the first implementation. The fonts are looked up in the system font directory, then in the current user's font directory.
+  Rationale: RTKLIB's forms use Tahoma and leave Japanese glyphs to Windows' font linking. egui draws text itself and has no OS font fallback, so the same fonts are chosen explicitly. Reading the font-link chain from the registry would also follow customized systems, but needs considerably more code and cannot be checked on the Linux development machine. That Tahoma is linked to MS UI Gothic is taken from a report about Japanese Windows 11 and is not verified on our machines.
+- On Linux and macOS, egui's built-in fonts draw Latin text and a system font draws Japanese text: Noto Sans CJK JP on Linux, Hiragino on macOS (not verified). No font is bundled.
+  Rationale: bundling a CJK font adds tens of megabytes.
+- A font inside a collection (`.ttc`) is chosen by family name, because one file holds several faces (MS Gothic, MS PGothic and MS UI Gothic). The environment variable `MRTKLIB_EGUI_CJK_FONT` names a file for Japanese text instead; if that file cannot be read, the application stops.
+- If a font is not found, the applications still start and print a warning on stderr: without Tahoma, Latin text uses the built-in font; without a Japanese font, Japanese text cannot be shown.
 
 ## Relationship to MRTKLIB
 

@@ -1,10 +1,11 @@
-//! The font for Japanese text.
+//! The fonts: on Windows the ones RTKLIB shows, elsewhere egui's fonts plus a CJK font.
 //!
-//! egui's built-in fonts have no CJK glyphs, so a system font is added as a fallback; no
-//! font is bundled. Candidates are tried in order. On Windows the order is meant to come close
-//! to the RTKLIB applications (Meiryo UI, then MS Gothic), then Noto Sans JP, expected on
-//! recent Windows versions. Font collections (`.ttc`) hold several faces, so each candidate
-//! names the family of the face to use.
+//! egui draws text itself and has no OS font fallback; it uses an ordered list of fonts per
+//! family. RTKLIB's forms use Tahoma, and on Japanese Windows the font linked to Tahoma for
+//! Japanese is MS UI Gothic. On Windows both are taken as they are, without further
+//! candidates: a Japanese Windows environment is assumed to have them. Elsewhere egui's
+//! built-in fonts stay first and a CJK font is added for Japanese text. No font is bundled.
+//! Font collections (`.ttc`) hold several faces, so each font names the family of its face.
 
 use eframe::egui::{FontData, FontDefinitions, FontFamily};
 use std::path::PathBuf;
@@ -16,63 +17,106 @@ pub(crate) const ENV: &str = "MRTKLIB_EGUI_CJK_FONT";
 /// A font file name and the family of the face to use in it.
 type Candidate = (&'static str, &'static str);
 
+/// Font for Latin text, placed before egui's built-in fonts.
 #[cfg(target_os = "windows")]
-const CANDIDATES: &[Candidate] = &[
-    ("Meiryo.ttc", "Meiryo UI"),
-    ("Msgothic.ttc", "MS Gothic"),
-    // The file name of Noto Sans JP on Windows is not verified yet.
-    ("NotoSansJP-VF.ttf", "Noto Sans JP"),
-    ("NotoSansJP-Regular.otf", "Noto Sans JP"),
-    ("NotoSansJP-Regular.ttf", "Noto Sans JP"),
-];
+const LATIN: &[Candidate] = &[("Tahoma.ttf", "Tahoma")];
+#[cfg(not(target_os = "windows"))]
+const LATIN: &[Candidate] = &[];
+
+/// Font for Japanese text. Several entries are alternative files of the same font.
+#[cfg(target_os = "windows")]
+const CJK: &[Candidate] = &[("Msgothic.ttc", "MS UI Gothic")];
 
 #[cfg(target_os = "macos")]
-const CANDIDATES: &[Candidate] = &[
+const CJK: &[Candidate] = &[
     // Not verified on macOS.
     ("ヒラギノ角ゴシック W3.ttc", "Hiragino Sans"),
     ("Hiragino Sans GB.ttc", "Hiragino Sans GB"),
 ];
 
 #[cfg(all(unix, not(target_os = "macos")))]
-const CANDIDATES: &[Candidate] = &[
+const CJK: &[Candidate] = &[
     ("NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
     ("NotoSansCJKjp-Regular.otf", "Noto Sans CJK JP"),
 ];
 
-/// Add the CJK fallback font to all font families.
-pub(crate) fn add_cjk_font(fonts: &mut FontDefinitions) {
-    if let Some(path) = std::env::var_os(ENV) {
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("cannot read the font given by {ENV} ({path:?}): {e}"));
-        install(fonts, bytes, 0);
-        return;
+/// Add the Latin and CJK fonts of this platform to egui's font families.
+pub(crate) fn add_fonts(fonts: &mut FontDefinitions) {
+    let latin = if LATIN.is_empty() {
+        None
+    } else {
+        let found = load(LATIN);
+        if found.is_none() {
+            eprintln!(
+                "warning: {} not found; Latin text uses the built-in font",
+                LATIN[0].1
+            );
+        }
+        found
+    };
+    let cjk = match std::env::var_os(ENV) {
+        Some(path) => {
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|e| panic!("cannot read the font given by {ENV} ({path:?}): {e}"));
+            Some(font_data(bytes, 0))
+        }
+        None => {
+            let found = load(CJK);
+            if found.is_none() {
+                eprintln!("warning: no CJK font found; Japanese text will not render (set {ENV})");
+            }
+            found
+        }
+    };
+    install(fonts, latin, cjk);
+}
+
+/// Proportional: the Latin font, then the CJK font, then egui's fonts; without a Latin font
+/// the CJK font goes last, so that egui's fonts keep drawing Latin text. Monospace: egui's
+/// fonts, then the CJK font.
+fn install(fonts: &mut FontDefinitions, latin: Option<FontData>, cjk: Option<FontData>) {
+    let has_latin = latin.is_some();
+    let has_cjk = cjk.is_some();
+    for (name, data) in [("latin", latin), ("cjk", cjk)] {
+        if let Some(data) = data {
+            fonts.font_data.insert(name.into(), Arc::new(data));
+        }
     }
-    match find_system_font() {
-        Some((bytes, index)) => install(fonts, bytes, index),
-        None => eprintln!("warning: no CJK font found; Japanese text will not render (set {ENV})"),
+    let proportional = family_mut(fonts, FontFamily::Proportional);
+    match (has_latin, has_cjk) {
+        (true, true) => {
+            proportional.insert(0, "cjk".into());
+            proportional.insert(0, "latin".into());
+        }
+        (true, false) => proportional.insert(0, "latin".into()),
+        (false, true) => proportional.push("cjk".into()),
+        (false, false) => {}
+    }
+    if has_cjk {
+        family_mut(fonts, FontFamily::Monospace).push("cjk".into());
     }
 }
 
-fn install(fonts: &mut FontDefinitions, bytes: Vec<u8>, index: u32) {
+fn family_mut(fonts: &mut FontDefinitions, family: FontFamily) -> &mut Vec<String> {
+    fonts
+        .families
+        .get_mut(&family)
+        .expect("default families exist")
+}
+
+fn font_data(bytes: Vec<u8>, index: u32) -> FontData {
     let mut data = FontData::from_owned(bytes);
     data.index = index;
-    fonts.font_data.insert("cjk".into(), Arc::new(data));
-    for family in [FontFamily::Proportional, FontFamily::Monospace] {
-        fonts
-            .families
-            .get_mut(&family)
-            .expect("default families exist")
-            .push("cjk".into());
-    }
+    data
 }
 
 /// The first candidate that exists and holds a face of the wanted family.
-fn find_system_font() -> Option<(Vec<u8>, u32)> {
-    for (file, family) in CANDIDATES {
+fn load(candidates: &[Candidate]) -> Option<FontData> {
+    for (file, family) in candidates {
         let Some(path) = locate(file) else { continue };
         match std::fs::read(&path) {
             Ok(bytes) => match face_index(&bytes, family) {
-                Some(index) => return Some((bytes, index)),
+                Some(index) => return Some(font_data(bytes, index)),
                 None => eprintln!("warning: {} has no face of family {family}", path.display()),
             },
             Err(e) => eprintln!("warning: cannot read font {}: {e}", path.display()),
@@ -173,6 +217,35 @@ mod tests {
         assert_eq!(face_index(&hack, "Hack"), Some(0));
         assert_eq!(face_index(&hack, "hack"), Some(0));
         assert_eq!(face_index(&hack, "Meiryo UI"), None);
+    }
+
+    fn names(fonts: &FontDefinitions, family: FontFamily) -> Vec<String> {
+        fonts.families[&family].clone()
+    }
+
+    #[test]
+    fn latin_font_goes_first_and_cjk_right_after_it() {
+        let mut fonts = FontDefinitions::default();
+        let defaults = names(&fonts, FontFamily::Proportional);
+        install(
+            &mut fonts,
+            Some(font_data(bundled("Hack"), 0)),
+            Some(font_data(bundled("Hack"), 0)),
+        );
+        let proportional = names(&fonts, FontFamily::Proportional);
+        assert_eq!(proportional[..2], ["latin", "cjk"]);
+        assert_eq!(proportional[2..], defaults[..]);
+        assert_eq!(names(&fonts, FontFamily::Monospace).last().unwrap(), "cjk");
+    }
+
+    #[test]
+    fn without_a_latin_font_cjk_goes_last() {
+        let mut fonts = FontDefinitions::default();
+        let defaults = names(&fonts, FontFamily::Proportional);
+        install(&mut fonts, None, Some(font_data(bundled("Hack"), 0)));
+        let proportional = names(&fonts, FontFamily::Proportional);
+        assert_eq!(proportional[..defaults.len()], defaults[..]);
+        assert_eq!(proportional.last().unwrap(), "cjk");
     }
 
     /// Faces of a collection on this machine; run with `--ignored` where Noto Sans CJK is

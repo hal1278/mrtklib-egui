@@ -29,7 +29,7 @@ pub fn run<A: eframe::App + 'static>(
 /// Install the CJK fallback font and the dense, classic look shared by all applications.
 pub fn setup(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    font::add_cjk_font(&mut fonts);
+    font::add_fonts(&mut fonts);
     ctx.set_fonts(fonts);
 
     let mut visuals = egui::Visuals::light();
