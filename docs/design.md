@@ -33,6 +33,11 @@ The toolkit is egui for now and may change.
 - Functions that RTKLIB also has follow the RTKLIB GUI, at least in the first implementation.
   Rationale: the target users know RTKLIB.
 - Functions that MRTKLIB adds (for example CLAS and MADOCA-PPP) follow the same style. The MADOCALIB GUI may serve as a reference.
+- The look is the classic light one in every OS theme, including a dark OS setting.
+  Rationale: RTKLIB has no dark mode.
+- Japanese text uses a system font; no font is bundled, at least in the first implementation. Windows tries Meiryo UI, then MS Gothic, as the RTKLIB applications do, then Noto Sans JP. Linux uses Noto Sans CJK JP; macOS tries Hiragino (not verified). The environment variable `MRTKLIB_EGUI_CJK_FONT` names a font file instead; if that file cannot be read, the application stops.
+  Rationale: egui's built-in fonts have no CJK glyphs, and bundling a CJK font adds tens of megabytes. Font collections (`.ttc`) are searched by family name, because one file holds several faces (Meiryo and Meiryo UI, MS Gothic and MS PGothic).
+- If no font is found, the applications still start and warn that Japanese text cannot be shown. The warning goes to stderr now and to the application's log view once one exists.
 
 ## Relationship to MRTKLIB
 

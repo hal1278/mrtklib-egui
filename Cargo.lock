@@ -2003,6 +2003,7 @@ name = "mrtklib-egui-common"
 version = "0.0.0"
 dependencies = [
  "eframe",
+ "ttf-parser",
 ]
 
 [[package]]
