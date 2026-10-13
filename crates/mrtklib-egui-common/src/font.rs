@@ -1,10 +1,10 @@
 //! The font for Japanese text.
 //!
 //! egui's built-in fonts have no CJK glyphs, so a system font is added as a fallback; no
-//! font is bundled. Candidates are tried in order. On Windows the order follows the RTKLIB
-//! applications (Meiryo UI, then MS Gothic), then Noto Sans JP, which recent Windows versions
-//! include. Font collections (`.ttc`) hold several faces, so each candidate names the
-//! family of the face to use.
+//! font is bundled. Candidates are tried in order. On Windows the order is meant to come close
+//! to the RTKLIB applications (Meiryo UI, then MS Gothic), then Noto Sans JP, expected on
+//! recent Windows versions. Font collections (`.ttc`) hold several faces, so each candidate
+//! names the family of the face to use.
 
 use eframe::egui::{FontData, FontDefinitions, FontFamily};
 use std::path::PathBuf;
@@ -37,7 +37,6 @@ const CANDIDATES: &[Candidate] = &[
 const CANDIDATES: &[Candidate] = &[
     ("NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
     ("NotoSansCJKjp-Regular.otf", "Noto Sans CJK JP"),
-    ("NotoSansJP-Regular.otf", "Noto Sans JP"),
 ];
 
 /// Add the CJK fallback font to all font families.
@@ -82,7 +81,8 @@ fn find_system_font() -> Option<(Vec<u8>, u32)> {
     None
 }
 
-/// Index of the upright face of `family` in a font file or collection.
+/// Index of the first upright face of `family` in a font file or collection. The weight is
+/// not checked: every candidate names a file that holds the regular weight.
 fn face_index(bytes: &[u8], family: &str) -> Option<u32> {
     let count = ttf_parser::fonts_in_collection(bytes).unwrap_or(1);
     (0..count).find(|&index| {
