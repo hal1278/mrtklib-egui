@@ -3,7 +3,9 @@
 //! The values only need to be plausible and consistent with each other (ECEF and
 //! latitude/longitude/height, ENU and ECEF covariance), so that a GUI shows the same
 //! point in every representation. The conversions are the textbook WGS84 formulas; this is
-//! test data, not positioning.
+//! test data, not positioning, and it must not be reused for display in the GUI crates.
+//! The constants (base point, start time, leap seconds, geoid separation, the status
+//! sequence) are arbitrary plausible values without further meaning.
 
 use std::f64::consts::PI;
 use std::time::Duration;

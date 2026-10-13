@@ -101,9 +101,12 @@ Each connection starts with an initial synchronization. Events missed while disc
 - `mrtklib-egui-mock` imitates the `mrtk run` RPC endpoint (protocol 0.1). GUI code and its tests use it until `mrtk` implements the RPC, and later for situations that the real server rarely produces (a failed start, lost events, protocol errors).
   Rationale: GUI tests then run with `cargo test` alone, without MRTKLIB or another runtime.
 - It is a library, which tests start in-process, and an executable with the RPC options, the token variable and the ready line of `mrtk run`.
-- Its tests validate every message it sends against a pinned copy of MRTKLIB `docs/rpc/openrpc.json` (`crates/mrtklib-egui-mock/contract/`). The real server is checked against the same file by the MRTKLIB contract test, so the mock and the server cannot drift apart unnoticed.
+- Its tests validate every message it sends against a pinned copy of MRTKLIB `docs/rpc/openrpc.json` (`crates/mrtklib-egui-mock/contract/`). The MRTKLIB contract test is planned to check the real server against the same file when the RPC is implemented; then the mock and the server cannot drift apart unnoticed.
   Rationale: a generic OpenRPC mock follows the schema but has no state (start, then running, then solution events; `busy` during a transition; sequence numbers).
-- Positioning is simulated: a rover circling near a fixed base, going from single to float to fix, with a missing solution every 40 epochs. The values are test data, not positioning.
+- Positioning is simulated: a rover circling near a fixed base, going from single to float to fix, with a missing solution every 40 epochs. The values are test data, not positioning; the coordinate conversions that make them consistent stay in the mock and are not reused for display in the GUI crates.
+- The mock is used by tests and during development only; the applications do not depend on it.
+- Dependencies: `tungstenite` (a WebSocket implementation with a blocking API, so the mock needs no async runtime) and, for the tests only, `jsonschema` with its default features off (no fetching of external `$ref` targets over HTTP).
+- Differences from `mrtk run` in the executable: it does not generate a token when none is given and does not print the `--rpc-no-auth` warning. Its behavior options (start failure, input end, timing) are fixed for the whole process.
 
 ## Process supervisor
 

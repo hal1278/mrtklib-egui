@@ -86,9 +86,8 @@ impl Shared {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        // A poisoned lock means a mock thread panicked; stop instead of hiding it.
+        self.state.lock().expect("mock state lock poisoned")
     }
 
     fn publish(&self, state: &mut State, kind: &str, data: Value) {
@@ -157,7 +156,7 @@ impl Shared {
 }
 
 fn seq_of(event: &Value) -> u64 {
-    event["seq"].as_u64().unwrap_or(0)
+    event["seq"].as_u64().expect("every event has a seq")
 }
 
 fn lifecycle(state: &State) -> Value {

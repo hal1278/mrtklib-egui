@@ -138,7 +138,10 @@ fn accept_loop(listener: &TcpListener, shared: &Arc<Shared>) {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(20));
             }
-            Err(_) => thread::sleep(Duration::from_millis(20)),
+            Err(e) => {
+                eprintln!("mrtklib-egui-mock: accept failed: {e}");
+                thread::sleep(Duration::from_millis(20));
+            }
         }
         connections.retain(|handle: &JoinHandle<()>| !handle.is_finished());
     }
