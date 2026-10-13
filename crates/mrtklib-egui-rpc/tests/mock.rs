@@ -301,9 +301,13 @@ fn a_session_follows_start_and_stop() {
 
     session.request(Command::Start);
     let model = wait_for(&session, "a solution while running", |m| {
-        is_running(m) && m.mode.is_some() && m.solution.is_some()
+        is_running(m) && m.mode.is_some() && m.last_valid_solution.is_some()
     });
     assert_eq!(model.mode.as_deref(), Some("kinematic"));
+    assert_ne!(
+        model.last_valid_solution.as_ref().unwrap().status,
+        SolutionStatus::None
+    );
     assert!(model.log.iter().any(|m| m.text.contains("started")));
     let outcome = model.last_request.unwrap();
     assert_eq!((outcome.command, outcome.result), (Command::Start, Ok(())));
@@ -317,6 +321,7 @@ fn a_session_follows_start_and_stop() {
     // The last run's mode and solution stay after the stop ...
     assert_eq!(model.mode.as_deref(), Some("kinematic"));
     assert!(model.solution.is_some());
+    assert!(model.last_valid_solution.is_some());
     assert_eq!(
         model.lifecycle.unwrap().stop_reason,
         Some(StopReason::Request)
@@ -330,6 +335,7 @@ fn a_session_follows_start_and_stop() {
             .is_some_and(|l| l.state == State::Starting)
     });
     assert!(model.mode.is_none() && model.solution.is_none());
+    assert!(model.last_valid_solution.is_none());
     wait_for(&session, "the next run", |m| {
         is_running(m) && m.mode.is_some()
     });
