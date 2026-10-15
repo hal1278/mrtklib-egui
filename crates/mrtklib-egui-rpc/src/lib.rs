@@ -16,7 +16,7 @@ mod types;
 
 pub use client::{Client, Error, RpcError};
 pub use session::{
-    Command, Connection, Model, RequestError, RequestOutcome, Session, SessionOptions,
+    Command, Connection, Model, RequestError, RequestOutcome, Session, SessionOptions, StartOutcome,
 };
 pub use types::{
     Accepted, Authentication, Covariance, CovarianceEcef, CovarianceEnu, Ecef, Event, EventData,

@@ -76,9 +76,9 @@ cargo test
 
 After Markdown changes, run `rumdl check .` (configuration: `rumdl.toml`).
 
-Tests needing the real `mrtk` are opt-in: set `MRTKLIB_EGUI_TEST_MRTK` and `MRTKLIB_EGUI_TEST_MRTKLIB_DIR`, then run `cargo test -p mrtklib-egui-navi -- --ignored real_backend_`.
-
 Test code that uses the RPC against the mock server. If a tool is unavailable, say so in the report.
+
+In addition to mock coverage, tests needing the real `mrtk` are opt-in: set `MRTKLIB_EGUI_TEST_MRTK` and `MRTKLIB_EGUI_TEST_MRTKLIB_DIR`, then run `cargo test -p mrtklib-egui-navi -- --ignored real_backend_`.
 
 ## Edit scope
 

@@ -506,6 +506,7 @@ mod tests {
         model.last_request = Some(RequestOutcome {
             command: Command::Start,
             accepted_seq: None,
+            start_outcome: None,
             result: Err(RequestError::Rpc(RpcError {
                 code: 1001,
                 reason: Some("busy".into()),

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use mrtklib_egui_rpc::{Command, Model, Session, SessionOptions};
+use mrtklib_egui_rpc::{Command, Model, Session, SessionOptions, StartOutcome};
 use mrtklib_egui_supervisor::{
     CommandLine, Options, Readiness, State, Stdin, Supervisor, generate_token,
 };
@@ -206,22 +206,13 @@ impl Controller {
             self.cancel_start();
             return;
         }
-        let Some(boundary) = outcome.accepted_seq else {
-            return;
-        };
-        let Some(event_seq) = self.model.lifecycle_seq else {
-            // A recovery snapshot cannot prove whose start failed; retain its status
-            // text and let a fresh Start operation obtain its own event boundary.
-            if self.model.seq > boundary {
+        let lifecycle = match &outcome.start_outcome {
+            Some(StartOutcome::Pending) => return,
+            Some(StartOutcome::Settled(lifecycle)) => lifecycle,
+            Some(StartOutcome::Unknown) | None => {
                 self.cancel_start();
+                return;
             }
-            return;
-        };
-        if event_seq <= boundary {
-            return;
-        }
-        let Some(lifecycle) = &self.model.lifecycle else {
-            return;
         };
         match lifecycle.state {
             mrtklib_egui_rpc::State::Stopped => {
@@ -566,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn refusal_must_be_a_status_event_after_the_start_boundary_and_consents_accumulate() {
+    fn only_the_settled_start_refusal_opens_a_dialog_and_consents_accumulate() {
         use mrtklib_egui_rpc::{LastError, Lifecycle, RequestOutcome, StopReason};
         let running = start(config()).unwrap();
         let mut controller = attached(running.url());
@@ -578,6 +569,7 @@ mod tests {
             command: Command::Start,
             accepted_seq: Some(10),
             result: Ok(()),
+            start_outcome: Some(StartOutcome::Pending),
         });
         controller.model.lifecycle = Some(Lifecycle {
             state: LifecycleState::Stopped,
@@ -588,13 +580,30 @@ mod tests {
                 paths: vec!["new.pos".into()],
             }),
         });
-        for seq in [None, Some(9), Some(10)] {
-            controller.model.lifecycle_seq = seq;
-            controller.update_start_operation();
-            assert!(controller.overwrite_dialog.is_none());
-        }
-        controller.model.lifecycle_seq = Some(11);
+        // The current lifecycle alone never proves which Start failed.
         controller.update_start_operation();
+        assert!(controller.overwrite_dialog.is_none());
+        let settled = controller.model.lifecycle.clone().unwrap();
+        controller
+            .model
+            .lifecycle
+            .as_mut()
+            .unwrap()
+            .last_error
+            .as_mut()
+            .unwrap()
+            .paths = vec!["another-client.pos".into()];
+        controller
+            .model
+            .last_request
+            .as_mut()
+            .unwrap()
+            .start_outcome = Some(StartOutcome::Settled(settled));
+        controller.update_start_operation();
+        assert_eq!(
+            controller.overwrite_dialog.as_ref().unwrap().paths[0].path,
+            "new.pos"
+        );
         controller.overwrite_dialog.as_mut().unwrap().paths[0].overwrite = true;
         controller.confirm_overwrite();
         assert_eq!(
@@ -611,6 +620,88 @@ mod tests {
                 .result
                 .is_ok()
         );
+    }
+    #[test]
+    fn unknown_start_outcome_ends_the_operation_without_a_dialog() {
+        use mrtklib_egui_rpc::RequestOutcome;
+        let running = start(config()).unwrap();
+        let mut controller = attached(running.url());
+        until(&mut controller, |c| c.view().action_enabled);
+        controller.start_operation = Some(StartOperation::default());
+        controller.model.last_request = Some(RequestOutcome {
+            command: Command::Start,
+            accepted_seq: Some(10),
+            result: Ok(()),
+            start_outcome: Some(StartOutcome::Unknown),
+        });
+        controller.update_start_operation();
+        assert!(controller.start_operation.is_none());
+        assert!(controller.overwrite_dialog.is_none());
+    }
+
+    #[test]
+    fn later_clients_failure_before_the_next_tick_cannot_replace_a_successful_start() {
+        let running = start(Config {
+            existing_outputs: vec!["output.pos".into()],
+            ..config()
+        })
+        .unwrap();
+        let mut controller = attached(running.url());
+        until(&mut controller, |c| c.view().action_enabled);
+        controller.request(Command::Start);
+        until(&mut controller, |c| c.overwrite_dialog.is_some());
+        controller.overwrite_dialog.as_mut().unwrap().paths[0].overwrite = true;
+        controller.confirm_overwrite();
+
+        // Model polling only: simulate a minimized window with no controller ticks
+        // between accepting its own Start and another client's failed Start.
+        let session = controller.session.as_ref().unwrap();
+        let wait_for = |done: &dyn Fn(&Model) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            loop {
+                let model = session.model();
+                if done(&model) {
+                    return model;
+                }
+                assert!(Instant::now() < deadline, "timed out: {model:?}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        wait_for(&|m| {
+            matches!(m.last_request.as_ref().and_then(|r| r.start_outcome.as_ref()),
+            Some(StartOutcome::Settled(l)) if l.state == LifecycleState::Running)
+        });
+        let (mut peer, _) = mrtklib_egui_rpc::Client::connect(
+            running.url(),
+            Some("controller-test-token"),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let stopped = peer.stop().unwrap().seq;
+        wait_for(&|m| {
+            m.seq > stopped
+                && m.lifecycle
+                    .as_ref()
+                    .is_some_and(|l| l.state == LifecycleState::Stopped)
+        });
+        let started = peer.start(&[]).unwrap().seq;
+        let failed = wait_for(&|m| {
+            m.seq > started
+                && m.lifecycle.as_ref().is_some_and(|l| {
+                    l.state == LifecycleState::Stopped
+                        && l.last_error
+                            .as_ref()
+                            .is_some_and(|e| e.reason == "outputExists")
+                })
+        });
+        assert!(
+            matches!(failed.last_request.unwrap().start_outcome, Some(StartOutcome::Settled(l)) if l.state == LifecycleState::Running)
+        );
+        assert!(controller.start_operation.is_some());
+        controller.tick();
+        assert!(controller.start_operation.is_none());
+        assert!(controller.overwrite_dialog.is_none());
+        assert!(controller.view().status.contains("outputExists"));
     }
 }
 
