@@ -12,6 +12,8 @@ use mrtklib_egui_mock::Config;
 const USAGE: &str = "\
 usage: mrtklib-egui-mock [run] [options]
   --no-console            accepted for mrtk run compatibility (no effect)
+  --exit-on-stdin-eof      shut down normally when stdin closes (needs --no-console)
+  --existing-output PATH   simulate an existing output file (repeatable)
   --config FILE           accepted for mrtk run compatibility (ignored)
   --rpc-port PORT          port to listen on (default 0: chosen by the system)
   --rpc-bind ADDR          address to listen on (default 127.0.0.1)
@@ -25,7 +27,7 @@ The token is read from MRTK_RPC_TOKEN unless --rpc-no-auth is given.";
 
 fn main() -> ExitCode {
     match parse(std::env::args().skip(1)) {
-        Ok(config) => run(config),
+        Ok(arguments) => run(arguments),
         Err(message) => {
             eprintln!("mrtklib-egui-mock: {message}\n{USAGE}");
             ExitCode::from(2)
@@ -33,9 +35,18 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(config: Config) -> ExitCode {
-    match mrtklib_egui_mock::start(config) {
+#[derive(Debug)]
+struct Arguments {
+    config: Config,
+    exit_on_stdin_eof: bool,
+}
+
+fn run(arguments: Arguments) -> ExitCode {
+    match mrtklib_egui_mock::start(arguments.config) {
         Ok(running) => {
+            if arguments.exit_on_stdin_eof {
+                running.exit_on_stdin_eof();
+            }
             eprintln!(
                 "MRTK-RPC-READY {}",
                 serde_json::json!({ "url": running.url() })
@@ -50,9 +61,11 @@ fn run(config: Config) -> ExitCode {
     }
 }
 
-fn parse(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
+fn parse(mut args: impl Iterator<Item = String>) -> Result<Arguments, String> {
     let mut config = Config::default();
     let mut no_auth = false;
+    let mut no_console = false;
+    let mut exit_on_stdin_eof = false;
     let mut first = true;
     while let Some(arg) = args.next() {
         if first && arg == "run" {
@@ -62,7 +75,9 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
         first = false;
         let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
-            "--no-console" => {}
+            "--no-console" => no_console = true,
+            "--exit-on-stdin-eof" => exit_on_stdin_eof = true,
+            "--existing-output" => config.existing_outputs.push(value(&arg)?),
             "--config" => {
                 let _ = value(&arg)?;
             }
@@ -84,6 +99,9 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
             _ => return Err(format!("unknown option {arg}")),
         }
     }
+    if exit_on_stdin_eof && !no_console {
+        return Err("--exit-on-stdin-eof requires --no-console".into());
+    }
     if no_auth {
         if !config.bind.is_loopback() {
             return Err("--rpc-no-auth needs a loopback address".to_string());
@@ -100,7 +118,10 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Config, String> {
         }
         config.token = Some(token);
     }
-    Ok(config)
+    Ok(Arguments {
+        config,
+        exit_on_stdin_eof,
+    })
 }
 
 fn number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
@@ -126,7 +147,8 @@ mod tests {
             "a nonexistent config.toml",
             "--rpc-no-auth",
         ]))
-        .unwrap();
+        .unwrap()
+        .config;
         assert_eq!(config.port, 0);
         assert!(config.token.is_none());
         assert_eq!(
@@ -149,5 +171,24 @@ mod tests {
             parse(arguments(&["run", "--config"])).unwrap_err(),
             "--config needs a value"
         );
+    }
+    #[test]
+    fn stdin_eof_requires_no_console_and_outputs_are_repeatable() {
+        assert_eq!(
+            parse(arguments(&["--exit-on-stdin-eof", "--rpc-no-auth"])).unwrap_err(),
+            "--exit-on-stdin-eof requires --no-console"
+        );
+        let arguments = parse(arguments(&[
+            "--no-console",
+            "--exit-on-stdin-eof",
+            "--rpc-no-auth",
+            "--existing-output",
+            "b.pos",
+            "--existing-output",
+            "a.pos",
+        ]))
+        .unwrap();
+        assert!(arguments.exit_on_stdin_eof);
+        assert_eq!(arguments.config.existing_outputs, ["b.pos", "a.pos"]);
     }
 }

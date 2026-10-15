@@ -48,6 +48,7 @@ struct State {
     last_error: Option<Value>,
     /// A restart holds the lifecycle from its stop to its start.
     restarting: bool,
+    overwrite: Vec<String>,
     shutdown: bool,
     seq: u64,
     events: VecDeque<Value>,
@@ -75,6 +76,7 @@ impl Shared {
                 stop_reason: None,
                 last_error: None,
                 restarting: false,
+                overwrite: Vec::new(),
                 shutdown: false,
                 seq: 0,
                 events: VecDeque::new(),
@@ -137,7 +139,8 @@ impl Shared {
         let limit = limit
             .and_then(|l| usize::try_from(l).ok())
             .unwrap_or(usize::MAX)
-            .min(self.config.page_limit);
+            .min(self.config.page_limit)
+            .min(1000);
         let pending: Vec<&Value> = state.events.iter().filter(|e| seq_of(e) > after).collect();
         let page: Vec<Value> = pending.iter().take(limit).map(|e| (*e).clone()).collect();
         let next = page.last().map_or(after, seq_of);
@@ -170,12 +173,13 @@ fn lifecycle(state: &State) -> Value {
     value
 }
 
-pub(crate) fn start(shared: &Arc<Shared>) -> Result<u64, LifecycleError> {
+pub(crate) fn start(shared: &Arc<Shared>, overwrite: Vec<String>) -> Result<u64, LifecycleError> {
     let mut state = shared.lock();
     shared.check_lifecycle_request(&state)?;
     if state.life == Life::Running {
         return Err(LifecycleError::AlreadyRunning);
     }
+    state.overwrite = overwrite;
     begin_start(shared, &mut state);
     Ok(state.seq)
 }
@@ -189,9 +193,10 @@ pub(crate) fn stop(shared: &Arc<Shared>) -> Result<u64, LifecycleError> {
     Ok(state.seq)
 }
 
-pub(crate) fn restart(shared: &Arc<Shared>) -> Result<u64, LifecycleError> {
+pub(crate) fn restart(shared: &Arc<Shared>, overwrite: Vec<String>) -> Result<u64, LifecycleError> {
     let mut state = shared.lock();
     shared.check_lifecycle_request(&state)?;
+    state.overwrite = overwrite;
     if state.life == Life::Running {
         state.restarting = true;
         begin_stop(shared, &mut state, "request");
@@ -231,7 +236,21 @@ fn begin_start(shared: &Arc<Shared>, state: &mut State) {
         thread::sleep(shared.config.transition);
         let mut state = shared.lock();
         state.restarting = false;
-        if shared.config.fail_start {
+        let mut refused = Vec::new();
+        for path in &shared.config.existing_outputs {
+            if !state.overwrite.contains(path) && !refused.contains(path) {
+                refused.push(path.clone());
+            }
+        }
+        if !refused.is_empty() {
+            state.life = Life::Stopped;
+            state.stop_reason = Some("error");
+            state.last_error = Some(json!({
+                "reason": "outputExists", "message": "Output files already exist.",
+                "paths": refused,
+            }));
+            shared.publish_lifecycle(&mut state);
+        } else if shared.config.fail_start {
             state.life = Life::Stopped;
             state.stop_reason = Some("error");
             state.last_error = Some(json!({

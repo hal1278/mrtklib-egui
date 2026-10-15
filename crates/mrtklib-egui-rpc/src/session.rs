@@ -25,8 +25,8 @@ pub struct SessionOptions {
     /// Bound for connecting and for each request, from its send to its response. Default 5 s.
     /// Lifecycle requests are answered when they take effect, not when the transition ends
     /// (§5), so a healthy server answers quickly; 5 s leaves room for a loaded machine and
-    /// still lets the GUI report a hung server. Provisional: revisit after measuring the
-    /// real `mrtk run`.
+    /// still lets the GUI report a hung server. Real Linux replay requests measured
+    /// 0.1–1.9 ms.
     pub timeout: Duration,
     /// Number of log messages that the model keeps (the newest ones). Default 1000, so
     /// that memory stays bounded when level-2 messages flood (§9). Provisional: set it
@@ -79,12 +79,27 @@ pub enum RequestError {
     Connection(String),
 }
 
-/// The outcome of the latest [`Session::request`]. Success only means that the server
-/// accepted it: the state change is seen in `lifecycle`, through the status events.
+/// The event outcome of an accepted Start request, retained until the next request.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StartOutcome {
+    Pending,
+    /// The first running or stopped status event after the accepted sequence boundary.
+    Settled(Lifecycle),
+    /// A synchronization replaced the model before the terminal event was observed.
+    Unknown,
+}
+
+/// The outcome of the latest [`Session::request`]. `result` records acceptance;
+/// `start_outcome` separately records the result of an accepted Start through events.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RequestOutcome {
     pub command: Command,
+    /// Boundary returned when this request took effect.
+    pub accepted_seq: Option<u64>,
     pub result: Result<(), RequestError>,
+    /// Present only for an accepted Start. Restart's intermediate stopped event does
+    /// not settle a Start, so restart outcomes are not tracked here.
+    pub start_outcome: Option<StartOutcome>,
 }
 
 /// What the GUI shows. It follows the protocol's events in publish order, so it is always
@@ -142,6 +157,11 @@ impl Default for Model {
 impl Model {
     /// Replace the state with a `sync` result (§7).
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        if let Some(request) = &mut self.last_request
+            && request.start_outcome == Some(StartOutcome::Pending)
+        {
+            request.start_outcome = Some(StartOutcome::Unknown);
+        }
         self.seq = snapshot.seq;
         self.lifecycle = Some(snapshot.status.lifecycle);
         self.mode = snapshot.status.mode;
@@ -153,11 +173,29 @@ impl Model {
             .cloned();
     }
 
+    /// Apply every event before publishing the page's model to the UI. Request
+    /// settlement must see intermediate lifecycle events as well as the final one.
+    fn apply_page(&mut self, page: EventPage, log_capacity: usize) {
+        for event in page.events {
+            self.apply_event(event, log_capacity);
+        }
+    }
+
     /// Apply one event (§7). An event of an unknown kind is skipped (§4).
     fn apply_event(&mut self, event: Event, log_capacity: usize) {
         self.seq = event.seq;
         match event.data {
             EventData::Status(lifecycle) => {
+                if let Some(request) = &mut self.last_request
+                    && request.start_outcome == Some(StartOutcome::Pending)
+                    && request.accepted_seq.is_some_and(|seq| event.seq > seq)
+                    && matches!(lifecycle.state, State::Running | State::Stopped)
+                {
+                    // Lifecycle transitions are serialized by the server. The first
+                    // terminal event belongs to this Start, even if another client
+                    // completes further transitions before the UI reads the model.
+                    request.start_outcome = Some(StartOutcome::Settled(lifecycle.clone()));
+                }
                 // A new run starts: forget the last run's mode and solution. The final
                 // solutions of a run can follow its `stopping` event (§7), so they are not
                 // cleared before that.
@@ -214,7 +252,7 @@ impl Shared {
 }
 
 enum Message {
-    Request(Command),
+    Request(Command, Vec<String>),
     Close,
 }
 
@@ -277,7 +315,7 @@ impl Session {
                             }
                         }
                         for message in receiver.try_iter() {
-                            if let Message::Request(command) = message {
+                            if let Message::Request(command, _) = message {
                                 model.last_request = Some(not_sent(command));
                             }
                         }
@@ -310,12 +348,27 @@ impl Session {
     /// Queue a lifecycle request. The worker sends it between polls and records the
     /// outcome in [`Model::last_request`].
     pub fn request(&self, command: Command) {
+        self.queue(command, Vec::new());
+    }
+
+    /// Start with all exact paths consented during this operation (§5).
+    pub fn request_start(&self, overwrite: Vec<String>) {
+        self.queue(Command::Start, overwrite);
+    }
+
+    fn queue(&self, command: Command, overwrite: Vec<String>) {
         let mut model = self.shared.lock();
         let ended = matches!(
             model.connection,
             Connection::ServerExited | Connection::Disconnected { .. }
         );
-        if !ended && self.sender.send(Message::Request(command)).is_ok() {
+        if !ended
+            && self
+                .sender
+                .send(Message::Request(command, overwrite))
+                .is_ok()
+        {
+            model.last_request = None;
             return;
         }
         // The connection has ended: nobody would ever send the request.
@@ -352,6 +405,8 @@ impl Drop for Session {
 fn not_sent(command: Command) -> RequestOutcome {
     RequestOutcome {
         command,
+        accepted_seq: None,
+        start_outcome: None,
         result: Err(RequestError::Connection(
             "the connection has ended; the request was not sent".into(),
         )),
@@ -434,24 +489,29 @@ impl Worker<'_> {
     fn handle(&mut self, message: Message) -> Result<Flow, Error> {
         match message {
             Message::Close => Ok(Flow::Stop),
-            Message::Request(command) if self.shared.stopping() => {
+            Message::Request(command, _) if self.shared.stopping() => {
                 self.shared
                     .update(|model| model.last_request = Some(not_sent(command)));
                 Ok(Flow::Stop)
             }
-            Message::Request(command) => self.execute(command).map(|()| Flow::Continue),
+            Message::Request(command, overwrite) => {
+                self.execute(command, &overwrite).map(|()| Flow::Continue)
+            }
         }
     }
 
     /// Send a lifecycle request and record its outcome. The lifecycle itself changes only
     /// through the events.
-    fn execute(&mut self, command: Command) -> Result<(), Error> {
+    fn execute(&mut self, command: Command, overwrite: &[String]) -> Result<(), Error> {
         let result = match command {
-            Command::Start => self.client.start(),
+            Command::Start => self.client.start(overwrite),
             Command::Stop => self.client.stop(),
-            Command::Restart => self.client.restart(),
+            Command::Restart => self.client.restart(overwrite),
             Command::Shutdown => self.client.shutdown(),
         };
+        let accepted_seq = result.as_ref().ok().map(|accepted| accepted.seq);
+        let start_outcome =
+            (command == Command::Start && result.is_ok()).then_some(StartOutcome::Pending);
         let (result, failure) = match result {
             Ok(_) => (Ok(()), None),
             // A refused request leaves the connection usable.
@@ -461,8 +521,14 @@ impl Worker<'_> {
                 Some(error),
             ),
         };
-        self.shared
-            .update(|model| model.last_request = Some(RequestOutcome { command, result }));
+        self.shared.update(|model| {
+            model.last_request = Some(RequestOutcome {
+                command,
+                accepted_seq,
+                result,
+                start_outcome,
+            })
+        });
         failure.map_or(Ok(()), Err)
     }
 
@@ -518,11 +584,7 @@ impl Worker<'_> {
             }
         }
         let capacity = self.log_capacity;
-        self.shared.update(|model| {
-            for event in page.events {
-                model.apply_event(event, capacity);
-            }
-        });
+        self.shared.update(|model| model.apply_page(page, capacity));
     }
 
     /// After a status event said `running`, learn the mode with `getStatus` (§6).
@@ -617,9 +679,7 @@ mod tests {
         };
         let mut model = Model::default();
         // The worker applies the whole page before the UI reads its model copy.
-        for event in page.events {
-            model.apply_event(event, 10);
-        }
+        model.apply_page(page, 10);
         let latest = model.solution.as_ref().unwrap();
         assert_eq!(latest.status, SolutionStatus::None);
         assert_eq!(latest.time.tow, 2.0);
@@ -669,6 +729,126 @@ mod tests {
                 assert!(model.last_valid_solution.is_none());
             }
         }
+    }
+
+    fn pending_start() -> Model {
+        Model {
+            last_request: Some(RequestOutcome {
+                command: Command::Start,
+                accepted_seq: Some(10),
+                result: Ok(()),
+                start_outcome: Some(StartOutcome::Pending),
+            }),
+            ..Model::default()
+        }
+    }
+
+    fn page(events: Vec<Event>) -> EventPage {
+        EventPage {
+            next: events.last().unwrap().seq,
+            events,
+            more: false,
+            lost: false,
+            oldest_seq: None,
+        }
+    }
+
+    fn output_exists(seq: u64, path: &str) -> Event {
+        event(json!({
+            "seq": seq, "kind": "status",
+            "data": { "state": "stopped", "stopReason": "error",
+                "lastError": { "reason": "outputExists", "message": "exists", "paths": [path] } }
+        }))
+    }
+
+    #[test]
+    fn start_settles_on_the_first_terminal_event_even_with_later_failures() {
+        for terminal in [status_event(11, "running"), output_exists(11, "own.pos")] {
+            let EventData::Status(lifecycle) = &terminal.data else {
+                unreachable!()
+            };
+            let settled = Some(StartOutcome::Settled(lifecycle.clone()));
+            let events = [
+                status_event(9, "stopped"),
+                status_event(10, "starting"),
+                terminal,
+                status_event(12, "stopping"),
+                status_event(13, "stopped"),
+                status_event(14, "starting"),
+                output_exists(15, "another-client.pos"),
+            ];
+            // A single published page and several pages read before the next UI tick
+            // must preserve the same first outcome, including its original paths.
+            for page_size in [events.len(), 3] {
+                let mut model = pending_start();
+                for chunk in events.chunks(page_size) {
+                    model.apply_page(page(chunk.to_vec()), 10);
+                }
+                assert_eq!(model.last_request.as_ref().unwrap().start_outcome, settled);
+                assert_eq!(model.seq, 15);
+                assert_eq!(
+                    model
+                        .lifecycle
+                        .as_ref()
+                        .unwrap()
+                        .last_error
+                        .as_ref()
+                        .unwrap()
+                        .paths,
+                    ["another-client.pos"]
+                );
+                // A later synchronization cannot undo an already observed outcome.
+                model.apply_snapshot(
+                    serde_json::from_value(json!({
+                        "seq": 15, "status": { "lifecycle": { "state": "stopped" } }
+                    }))
+                    .unwrap(),
+                );
+                assert_eq!(model.last_request.as_ref().unwrap().start_outcome, settled);
+            }
+        }
+    }
+
+    #[test]
+    fn start_ignores_terminal_events_at_or_before_its_boundary_and_waits_through_transitions() {
+        let mut model = pending_start();
+        model.apply_page(
+            page(vec![
+                status_event(9, "running"),
+                output_exists(10, "old.pos"),
+                status_event(11, "starting"),
+                status_event(12, "stopping"),
+            ]),
+            10,
+        );
+        assert_eq!(
+            model.last_request.unwrap().start_outcome,
+            Some(StartOutcome::Pending)
+        );
+    }
+
+    #[test]
+    fn sync_before_start_settlement_leaves_the_outcome_unknown() {
+        let mut model = pending_start();
+        model.apply_snapshot(serde_json::from_value(json!({
+            "seq": 15, "status": { "lifecycle": { "state": "stopped", "stopReason": "error",
+                "lastError": { "reason": "outputExists", "message": "exists", "paths": ["unknown.pos"] } } }
+        })).unwrap());
+        assert_eq!(
+            model.last_request.as_ref().unwrap().start_outcome,
+            Some(StartOutcome::Unknown)
+        );
+        model.apply_page(
+            page(vec![
+                status_event(16, "starting"),
+                output_exists(17, "later.pos"),
+            ]),
+            10,
+        );
+        assert_eq!(
+            model.last_request.unwrap().start_outcome,
+            Some(StartOutcome::Unknown)
+        );
     }
 
     #[test]

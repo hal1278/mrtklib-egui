@@ -125,7 +125,7 @@ fn start_publishes_solutions_and_stop_ends_the_run() {
     assert_eq!(status.status.lifecycle.state, State::Stopped);
     assert_eq!(status.status.mode, None);
 
-    poller.client.start().unwrap();
+    poller.client.start(&[]).unwrap();
     poller.until(|events| solutions(events) >= 12);
     let status = poller.client.get_status().unwrap();
     assert_eq!(status.status.mode.as_deref(), Some("kinematic"));
@@ -175,13 +175,13 @@ fn lifecycle_requests_are_refused_while_busy_or_running() {
     })
     .unwrap();
     let mut poller = Poller::new(&running);
-    poller.client.start().unwrap();
-    let busy = rpc_error(poller.client.start().unwrap_err());
+    poller.client.start(&[]).unwrap();
+    let busy = rpc_error(poller.client.start(&[]).unwrap_err());
     assert_eq!(busy.reason.as_deref(), Some("busy"));
     assert_eq!(busy.state, Some(State::Starting));
 
     poller.until(|events| last_state(events) == Some(State::Running));
-    let already = rpc_error(poller.client.start().unwrap_err());
+    let already = rpc_error(poller.client.start(&[]).unwrap_err());
     assert_eq!(already.code, 1002);
     assert_eq!(already.reason.as_deref(), Some("alreadyRunning"));
 }
@@ -207,7 +207,7 @@ fn a_failed_start_reports_last_error() {
     })
     .unwrap();
     let mut poller = Poller::new(&running);
-    poller.client.start().unwrap();
+    poller.client.start(&[]).unwrap();
     poller.until(|events| last_state(events) == Some(State::Stopped));
     let lifecycle = poller.client.get_status().unwrap().status.lifecycle;
     assert_eq!(lifecycle.stop_reason, Some(StopReason::Error));
@@ -222,7 +222,7 @@ fn input_end_stops_the_run_by_itself() {
     })
     .unwrap();
     let mut poller = Poller::new(&running);
-    poller.client.start().unwrap();
+    poller.client.start(&[]).unwrap();
     poller.until(|events| last_state(events) == Some(State::Stopped));
     assert_eq!(solutions(&poller.events), 3);
     let lifecycle = poller.client.get_status().unwrap().status.lifecycle;
@@ -238,7 +238,7 @@ fn lost_events_and_paging() {
     })
     .unwrap();
     let mut client = connect(&running);
-    client.start().unwrap();
+    client.start(&[]).unwrap();
     thread::sleep(Duration::from_millis(400));
     let page = client.get_events(0, None).unwrap();
     assert!(page.lost && page.events.is_empty());

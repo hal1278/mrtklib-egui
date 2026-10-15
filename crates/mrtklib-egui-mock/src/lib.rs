@@ -37,6 +37,8 @@ pub struct Config {
     pub solution_interval: Duration,
     /// Make every start fail with `lastError`.
     pub fail_start: bool,
+    /// Simulated existing outputs in stream slot order (no filesystem access).
+    pub existing_outputs: Vec<String>,
     /// Stop by itself with `stopReason: "inputEnd"` after this many solutions of a run.
     pub input_end_after: Option<u64>,
     /// Number of events held. The real server's capacity is not fixed; this is a mock value.
@@ -55,6 +57,7 @@ impl Default for Config {
             transition: Duration::from_millis(300),
             solution_interval: Duration::from_secs(1),
             fail_start: false,
+            existing_outputs: Vec::new(),
             input_end_after: None,
             event_capacity: 10_000,
             page_limit: 1000,
@@ -78,6 +81,26 @@ impl Running {
     /// Block until a client's `shutdown` has been carried out.
     pub fn wait(mut self) {
         self.join();
+    }
+
+    /// Watch process stdin on a detached thread, for the executable only. EOF or a
+    /// read error requests the same normal shutdown as RPC. Bytes are discarded.
+    pub fn exit_on_stdin_eof(&self) {
+        use std::io::Read;
+        let shared = Arc::clone(&self.shared);
+        thread::spawn(move || {
+            let mut stdin = io::stdin().lock();
+            let mut bytes = [0; 1024];
+            loop {
+                match stdin.read(&mut bytes) {
+                    Ok(0) | Err(_) => {
+                        state::shutdown(&shared);
+                        return;
+                    }
+                    Ok(_) => {}
+                }
+            }
+        });
     }
 
     fn join(&mut self) {

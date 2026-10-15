@@ -53,11 +53,14 @@ pub enum StopReason {
 /// The most recent start failure (§5).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct LastError {
-    /// Stable name from an open set (0.1: `startFailed`). The caller treats a name it does
+    /// Stable name from an open set (0.1: `startFailed`, `outputExists`). The caller treats a name it does
     /// not know like `startFailed`, so this stays a string.
     pub reason: String,
     /// English text for display. Not part of the contract.
     pub message: String,
+    /// Distinct refused output paths, in server order. Absent means empty.
+    #[serde(default)]
+    pub paths: Vec<String>,
 }
 
 /// The lifecycle object: `status.lifecycle` and the data of status events (§5).
@@ -366,5 +369,13 @@ mod tests {
         .unwrap();
         assert_eq!(page.oldest_seq, Some(9));
         assert!(page.lost && page.events.is_empty());
+    }
+    #[test]
+    fn last_error_paths_are_preserved_or_default_to_empty() {
+        let error: LastError = serde_json::from_value(json!({"reason": "outputExists", "message": "exists", "paths": ["./a.pos", "b file.pos"]})).unwrap();
+        assert_eq!(error.paths, ["./a.pos", "b file.pos"]);
+        let error: LastError =
+            serde_json::from_value(json!({"reason": "startFailed", "message": "failed"})).unwrap();
+        assert!(error.paths.is_empty());
     }
 }

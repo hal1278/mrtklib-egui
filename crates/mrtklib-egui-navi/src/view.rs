@@ -187,6 +187,9 @@ fn status_line(
         }
         if let Some(error) = &lifecycle.last_error {
             parts.push(format!("lastError: {}: {}", error.reason, error.message));
+            if !error.paths.is_empty() {
+                parts.push(format!("Paths: {}", error.paths.join(", ")));
+            }
         }
     }
     if let Some(outcome) = &model.last_request
@@ -496,11 +499,14 @@ mod tests {
         model.lost_events = 3;
         model.lifecycle.as_mut().unwrap().stop_reason = Some(StopReason::Error);
         model.lifecycle.as_mut().unwrap().last_error = Some(LastError {
+            paths: vec![],
             reason: "startFailed".into(),
             message: "test-secret ntrip://user:pass@host/mount".into(),
         });
         model.last_request = Some(RequestOutcome {
             command: Command::Start,
+            accepted_seq: None,
+            start_outcome: None,
             result: Err(RequestError::Rpc(RpcError {
                 code: 1001,
                 reason: Some("busy".into()),
