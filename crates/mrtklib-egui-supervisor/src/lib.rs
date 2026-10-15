@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -29,6 +29,7 @@ pub fn generate_token() -> String {
 pub struct CommandLine {
     pub program: PathBuf,
     pub args: Vec<OsString>,
+    pub working_directory: Option<PathBuf>,
 }
 
 impl fmt::Debug for CommandLine {
@@ -43,7 +44,7 @@ impl CommandLine {
     /// A masked display string, with double quotes and escapes for ambiguous words.
     /// This is not shell syntax; non-UTF-8 OS strings are decoded lossily for display.
     pub fn preview(&self) -> String {
-        std::iter::once(self.program.as_os_str())
+        let argv = std::iter::once(self.program.as_os_str())
             .chain(self.args.iter().map(OsString::as_os_str))
             .map(|word| {
                 let text = mask::mask(&word.to_string_lossy(), &[]);
@@ -58,13 +59,29 @@ impl CommandLine {
                 }
             })
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        match &self.working_directory {
+            Some(directory) => format!(
+                "Working directory: {:?} | Program: {argv}",
+                mask::mask(&directory.to_string_lossy(), &[])
+            ),
+            None => argv,
+        }
     }
 }
 
-/// Provisional bounds and startup timing.
+/// Child stdin ownership. Held-open pipes are never written to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Stdin {
+    #[default]
+    Null,
+    HeldOpen,
+}
+
+/// Bounds and startup timing.
 #[derive(Clone, Debug)]
 pub struct Options {
+    pub stdin: Stdin,
     /// Default 64 KiB, far above normal output; bounds pending bytes per pipe.
     /// An overlong display line is replaced entirely by a visible marker.
     pub max_line_bytes: usize,
@@ -75,7 +92,7 @@ pub struct Options {
     /// history, as in the RPC session; revisit when the log panel is designed.
     pub max_lines: usize,
     /// Default 10 s: listening is reported immediately; allows a slow machine
-    /// but reports a stuck start. Revisit with the real `mrtk run`.
+    /// but reports a stuck start. Real Linux replay readiness measured 23–33 ms.
     pub ready_timeout: Duration,
     /// Default 1 s after reaping: the child's output is already in the pipe and
     /// drains within milliseconds. This bound matters when a descendant holds
@@ -86,6 +103,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            stdin: Stdin::Null,
             max_line_bytes: 64 * 1024,
             max_display_chars: 1000,
             max_lines: 1000,
@@ -269,6 +287,7 @@ impl Shared {
 pub struct Supervisor {
     shared: Arc<Shared>,
     child: Arc<Mutex<Option<Child>>>,
+    stdin: Mutex<Option<ChildStdin>>,
     reader_threads: Mutex<Vec<JoinHandle<()>>>,
     monitor: Option<JoinHandle<()>>,
 }
@@ -282,7 +301,7 @@ impl fmt::Debug for Supervisor {
 }
 
 impl Supervisor {
-    /// Start exactly this argv, with null stdin and two piped outputs. Secret
+    /// Start exactly this argv, with the selected stdin and two piped outputs. Secret
     /// environment values are also masked in all display output and errors.
     /// Spawn failures are in the state. `notify` runs outside the state lock;
     /// it should promptly request a repaint, as in the RPC session.
@@ -320,12 +339,20 @@ impl Supervisor {
             child: Arc::new(Mutex::new(None)),
             reader_threads: Mutex::new(Vec::new()),
             monitor: None,
+            stdin: Mutex::new(None),
         };
         let started = Instant::now();
-        let result = Command::new(command_line.program)
-            .args(command_line.args)
+        let mut command = Command::new(command_line.program);
+        command.args(command_line.args);
+        if let Some(directory) = command_line.working_directory {
+            command.current_dir(directory);
+        }
+        let result = command
             .envs(secret_env.iter().map(|(name, value)| (name, value)))
-            .stdin(Stdio::null())
+            .stdin(match supervisor.shared.options.stdin {
+                Stdin::Null => Stdio::null(),
+                Stdin::HeldOpen => Stdio::piped(),
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn();
@@ -341,6 +368,7 @@ impl Supervisor {
                 return supervisor;
             }
         };
+        *supervisor.stdin.lock().expect("stdin lock poisoned") = child.stdin.take();
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         *supervisor.child.lock().expect("child lock poisoned") = Some(child);
@@ -435,10 +463,12 @@ impl Supervisor {
         inner.ended && !inner.awaiting_output()
     }
 
-    /// Allow the caller's shutdown request to finish, then force termination and
+    /// Close held stdin, allow normal shutdown to finish, then force termination and
     /// reap. After reaping, await output for at most the remaining drain timeout,
     /// then detach readers; descendants may still hold the pipes open.
     pub fn stop(&self, grace: Duration) {
+        // Separate from the child lock: closing must never queue behind child polling.
+        self.stdin.lock().expect("stdin lock poisoned").take();
         let inner = self.shared.lock();
         let (inner, _) = self
             .shared
@@ -514,6 +544,7 @@ impl Supervisor {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
+        self.stdin.get_mut().expect("stdin lock poisoned").take();
         if !self.shared.lock().ended {
             self.reap();
         }
@@ -747,6 +778,7 @@ mod tests {
     fn empty_supervisor(notify: impl Fn() + Send + Sync + 'static) -> Supervisor {
         Supervisor::spawn(
             CommandLine {
+                working_directory: None,
                 program: PathBuf::new(),
                 args: vec![],
             },
@@ -834,6 +866,7 @@ mod tests {
     #[test]
     fn preview_quotes_and_masks_without_changing_argv() {
         let command = CommandLine {
+            working_directory: None,
             program: "a program/mrtk".into(),
             args: ["run", "", "a\"b\\c\n", "ntrip://user:pass@host/MNT"]
                 .map(OsString::from)

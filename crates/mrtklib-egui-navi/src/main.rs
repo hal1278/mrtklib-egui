@@ -88,6 +88,48 @@ impl eframe::App for Navi {
                 ui.label(&view.status);
             });
         });
+        let directory = self.controller.working_directory();
+        let labels: Vec<_> =
+            self.controller
+                .overwrite_dialog
+                .as_ref()
+                .map_or_else(Vec::new, |dialog| {
+                    dialog
+                        .paths
+                        .iter()
+                        .map(|row| self.controller.display(&row.path))
+                        .collect()
+                });
+        let mut confirm = false;
+        let mut cancel = false;
+        if let Some(dialog) = &mut self.controller.overwrite_dialog {
+            egui::Modal::new(egui::Id::new("overwrite outputs")).show(ui.ctx(), |ui| {
+                ui.set_max_width(600.0);
+                ui.heading("Existing output files");
+                ui.label(format!("Working directory: {directory}"));
+                egui::ScrollArea::vertical()
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        for (row, label) in dialog.paths.iter_mut().zip(labels) {
+                            ui.group(|ui| {
+                                ui.label(label);
+                                ui.checkbox(&mut row.overwrite, "Overwrite");
+                            });
+                        }
+                    });
+                ui.horizontal(|ui| {
+                    confirm = ui
+                        .add_enabled(dialog.all_checked(), egui::Button::new("Start"))
+                        .clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        }
+        if cancel {
+            self.controller.cancel_start();
+        } else if confirm {
+            self.controller.confirm_overwrite();
+        }
     }
 
     fn on_exit(&mut self) {

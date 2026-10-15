@@ -450,3 +450,99 @@ fn shutdown_during_start_runs_after_the_transition() {
     }
     running.wait();
 }
+
+#[test]
+fn overwrite_consent_is_exact_distinct_and_belongs_to_each_request() {
+    let running = start(Config {
+        existing_outputs: vec!["b.pos".into(), "a.pos".into(), "b.pos".into()],
+        ..fast()
+    })
+    .unwrap();
+    let mut client = Client::new(&running);
+    client
+        .call("start", json!({"overwrite": ["./b.pos"]}))
+        .unwrap();
+    client.poll_until(|events| last_state(events).as_deref() == Some("stopped"));
+    let status = client.call("getStatus", json!({})).unwrap();
+    assert_eq!(
+        status["status"]["lifecycle"]["lastError"]["paths"],
+        json!(["b.pos", "a.pos"])
+    );
+    client.events.clear();
+    client
+        .call("start", json!({"overwrite": ["b.pos"]}))
+        .unwrap();
+    client.poll_until(|events| last_state(events).as_deref() == Some("stopped"));
+    let status = client.call("getStatus", json!({})).unwrap();
+    assert_eq!(
+        status["status"]["lifecycle"]["lastError"]["paths"],
+        json!(["a.pos"])
+    );
+    client.events.clear();
+    client
+        .call("start", json!({"overwrite": ["b.pos", "a.pos"]}))
+        .unwrap();
+    client.poll_until(|events| last_state(events).as_deref() == Some("running"));
+    client.events.clear();
+    client.call("restart", json!({})).unwrap();
+    client.poll_until(|events| states(events).len() >= 4);
+    let status = client.call("getStatus", json!({})).unwrap();
+    assert_eq!(
+        status["status"]["lifecycle"]["lastError"]["paths"],
+        json!(["b.pos", "a.pos"])
+    );
+}
+
+#[test]
+fn invalid_overwrite_and_unknown_parameters_are_rejected() {
+    let running = start(fast()).unwrap();
+    let mut client = Client::new(&running);
+    for method in ["start", "restart"] {
+        for overwrite in [
+            json!(null),
+            json!(1),
+            json!(true),
+            json!("path"),
+            json!({}),
+            json!([1]),
+            json!([false]),
+            json!([null]),
+            json!(["a\u{0}b"]),
+        ] {
+            let error = client
+                .call(method, json!({"overwrite": overwrite}))
+                .unwrap_err();
+            assert_eq!(error_reason(&error), "invalidParams");
+        }
+    }
+    for method in [
+        "getVersion",
+        "getStatus",
+        "sync",
+        "getEvents",
+        "start",
+        "stop",
+        "restart",
+        "shutdown",
+    ] {
+        let error = client.call(method, json!({"unknown": 1})).unwrap_err();
+        assert_eq!(error_reason(&error), "invalidParams");
+    }
+}
+
+#[test]
+fn event_limit_is_cut_to_the_server_maximum() {
+    let running = start(Config {
+        page_limit: 2,
+        ..fast()
+    })
+    .unwrap();
+    let mut client = Client::new(&running);
+    client.call("start", json!({})).unwrap();
+    client.poll_until(|events| solutions(events) >= 2);
+    let page = client
+        .call("getEvents", json!({"after": 0.0, "limit": 1e99}))
+        .unwrap();
+    assert_eq!(page["events"].as_array().unwrap().len(), 2);
+    assert_eq!(page["more"], true);
+}

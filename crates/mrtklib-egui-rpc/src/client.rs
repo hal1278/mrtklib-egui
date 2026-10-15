@@ -265,8 +265,11 @@ impl Client {
 
     /// `start` (§5). Answers when the request takes effect; follow the outcome in the
     /// status events.
-    pub fn start(&mut self) -> Result<Accepted, Error> {
-        self.call("start", None)
+    pub fn start(&mut self, overwrite: &[String]) -> Result<Accepted, Error> {
+        self.call(
+            "start",
+            (!overwrite.is_empty()).then(|| json!({ "overwrite": overwrite })),
+        )
     }
 
     /// `stop` (§5). Succeeds without effect when already stopped.
@@ -275,8 +278,11 @@ impl Client {
     }
 
     /// `restart` (§5).
-    pub fn restart(&mut self) -> Result<Accepted, Error> {
-        self.call("restart", None)
+    pub fn restart(&mut self, overwrite: &[String]) -> Result<Accepted, Error> {
+        self.call(
+            "restart",
+            (!overwrite.is_empty()).then(|| json!({ "overwrite": overwrite })),
+        )
     }
 
     /// `shutdown` (§5): the process ends afterwards and closes the connection with

@@ -25,8 +25,8 @@ pub struct SessionOptions {
     /// Bound for connecting and for each request, from its send to its response. Default 5 s.
     /// Lifecycle requests are answered when they take effect, not when the transition ends
     /// (§5), so a healthy server answers quickly; 5 s leaves room for a loaded machine and
-    /// still lets the GUI report a hung server. Provisional: revisit after measuring the
-    /// real `mrtk run`.
+    /// still lets the GUI report a hung server. Real Linux replay requests measured
+    /// 0.1–1.9 ms.
     pub timeout: Duration,
     /// Number of log messages that the model keeps (the newest ones). Default 1000, so
     /// that memory stays bounded when level-2 messages flood (§9). Provisional: set it
@@ -84,6 +84,8 @@ pub enum RequestError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RequestOutcome {
     pub command: Command,
+    /// Boundary returned when this request took effect.
+    pub accepted_seq: Option<u64>,
     pub result: Result<(), RequestError>,
 }
 
@@ -99,6 +101,8 @@ pub struct Model {
     pub connection: Connection,
     /// The `seq` of the last event applied (or of the last `sync`).
     pub seq: u64,
+    /// Sequence of the latest lifecycle event; snapshots have no event provenance.
+    pub lifecycle_seq: Option<u64>,
     /// `None` until the first `sync`.
     pub lifecycle: Option<Lifecycle>,
     /// Positioning mode of the current or last run. `None` before the first run, after a
@@ -128,6 +132,7 @@ impl Default for Model {
         Self {
             connection: Connection::Connecting,
             seq: 0,
+            lifecycle_seq: None,
             lifecycle: None,
             mode: None,
             solution: None,
@@ -143,6 +148,7 @@ impl Model {
     /// Replace the state with a `sync` result (§7).
     fn apply_snapshot(&mut self, snapshot: Snapshot) {
         self.seq = snapshot.seq;
+        self.lifecycle_seq = None;
         self.lifecycle = Some(snapshot.status.lifecycle);
         self.mode = snapshot.status.mode;
         self.solution = snapshot.status.solution;
@@ -158,6 +164,7 @@ impl Model {
         self.seq = event.seq;
         match event.data {
             EventData::Status(lifecycle) => {
+                self.lifecycle_seq = Some(event.seq);
                 // A new run starts: forget the last run's mode and solution. The final
                 // solutions of a run can follow its `stopping` event (§7), so they are not
                 // cleared before that.
@@ -214,7 +221,7 @@ impl Shared {
 }
 
 enum Message {
-    Request(Command),
+    Request(Command, Vec<String>),
     Close,
 }
 
@@ -277,7 +284,7 @@ impl Session {
                             }
                         }
                         for message in receiver.try_iter() {
-                            if let Message::Request(command) = message {
+                            if let Message::Request(command, _) = message {
                                 model.last_request = Some(not_sent(command));
                             }
                         }
@@ -310,12 +317,27 @@ impl Session {
     /// Queue a lifecycle request. The worker sends it between polls and records the
     /// outcome in [`Model::last_request`].
     pub fn request(&self, command: Command) {
+        self.queue(command, Vec::new());
+    }
+
+    /// Start with all exact paths consented during this operation (§5).
+    pub fn request_start(&self, overwrite: Vec<String>) {
+        self.queue(Command::Start, overwrite);
+    }
+
+    fn queue(&self, command: Command, overwrite: Vec<String>) {
         let mut model = self.shared.lock();
         let ended = matches!(
             model.connection,
             Connection::ServerExited | Connection::Disconnected { .. }
         );
-        if !ended && self.sender.send(Message::Request(command)).is_ok() {
+        if !ended
+            && self
+                .sender
+                .send(Message::Request(command, overwrite))
+                .is_ok()
+        {
+            model.last_request = None;
             return;
         }
         // The connection has ended: nobody would ever send the request.
@@ -352,6 +374,7 @@ impl Drop for Session {
 fn not_sent(command: Command) -> RequestOutcome {
     RequestOutcome {
         command,
+        accepted_seq: None,
         result: Err(RequestError::Connection(
             "the connection has ended; the request was not sent".into(),
         )),
@@ -434,24 +457,27 @@ impl Worker<'_> {
     fn handle(&mut self, message: Message) -> Result<Flow, Error> {
         match message {
             Message::Close => Ok(Flow::Stop),
-            Message::Request(command) if self.shared.stopping() => {
+            Message::Request(command, _) if self.shared.stopping() => {
                 self.shared
                     .update(|model| model.last_request = Some(not_sent(command)));
                 Ok(Flow::Stop)
             }
-            Message::Request(command) => self.execute(command).map(|()| Flow::Continue),
+            Message::Request(command, overwrite) => {
+                self.execute(command, &overwrite).map(|()| Flow::Continue)
+            }
         }
     }
 
     /// Send a lifecycle request and record its outcome. The lifecycle itself changes only
     /// through the events.
-    fn execute(&mut self, command: Command) -> Result<(), Error> {
+    fn execute(&mut self, command: Command, overwrite: &[String]) -> Result<(), Error> {
         let result = match command {
-            Command::Start => self.client.start(),
+            Command::Start => self.client.start(overwrite),
             Command::Stop => self.client.stop(),
-            Command::Restart => self.client.restart(),
+            Command::Restart => self.client.restart(overwrite),
             Command::Shutdown => self.client.shutdown(),
         };
+        let accepted_seq = result.as_ref().ok().map(|accepted| accepted.seq);
         let (result, failure) = match result {
             Ok(_) => (Ok(()), None),
             // A refused request leaves the connection usable.
@@ -461,8 +487,13 @@ impl Worker<'_> {
                 Some(error),
             ),
         };
-        self.shared
-            .update(|model| model.last_request = Some(RequestOutcome { command, result }));
+        self.shared.update(|model| {
+            model.last_request = Some(RequestOutcome {
+                command,
+                accepted_seq,
+                result,
+            })
+        });
         failure.map_or(Ok(()), Err)
     }
 

@@ -539,3 +539,38 @@ fn a_session_keeps_the_last_solution_after_stopping_until_the_next_run_starts() 
     drop(session);
     server.join().unwrap();
 }
+
+#[test]
+fn lifecycle_overwrite_is_omitted_when_empty_and_sent_unchanged_otherwise() {
+    let paths = vec![
+        "./b.pos".to_string(),
+        "a file.pos".to_string(),
+        "./b.pos".to_string(),
+    ];
+    let expected = paths.clone();
+    let (url, server) = fake_server("mrtk-rpc", move |mut ws| {
+        answer_version(&mut ws, "0.1");
+        for (method, overwrite) in [
+            ("start", None),
+            ("restart", None),
+            ("start", Some(&expected)),
+            ("restart", Some(&expected)),
+        ] {
+            let request = read_request(&mut ws);
+            assert_eq!(request["method"], method);
+            match overwrite {
+                None => assert!(request.get("params").is_none()),
+                Some(paths) => assert_eq!(request["params"], json!({"overwrite": paths})),
+            }
+            answer(&mut ws, &request, json!({"seq": 42}));
+        }
+        let _ = ws.read();
+    });
+    let (mut client, _) = Client::connect(&url, None, TIMEOUT).unwrap();
+    assert_eq!(client.start(&[]).unwrap().seq, 42);
+    client.restart(&[]).unwrap();
+    client.start(&paths).unwrap();
+    client.restart(&paths).unwrap();
+    drop(client);
+    server.join().unwrap();
+}

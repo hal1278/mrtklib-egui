@@ -131,18 +131,12 @@ fn dispatch(
                 .events(after, limit)
                 .map_err(|CursorAhead| RpcError::invalid_params())
         }
-        "start" => {
-            no_params()?;
-            Ok(accepted(state::start(shared)?))
-        }
+        "start" => Ok(accepted(state::start(shared, overwrite_params(params)?)?)),
         "stop" => {
             no_params()?;
             Ok(accepted(state::stop(shared)?))
         }
-        "restart" => {
-            no_params()?;
-            Ok(accepted(state::restart(shared)?))
-        }
+        "restart" => Ok(accepted(state::restart(shared, overwrite_params(params)?)?)),
         "shutdown" => {
             no_params()?;
             Ok(accepted(state::shutdown(shared)))
@@ -151,20 +145,47 @@ fn dispatch(
     }
 }
 
+fn overwrite_params(params: &Map<String, Value>) -> Result<Vec<String>, RpcError> {
+    if params.keys().any(|key| key != "overwrite") {
+        return Err(RpcError::invalid_params());
+    }
+    match params.get("overwrite") {
+        None => Ok(Vec::new()),
+        Some(Value::Array(paths)) => paths
+            .iter()
+            .map(|path| {
+                path.as_str()
+                    .filter(|path| !path.contains('\0'))
+                    .map(str::to_owned)
+                    .ok_or_else(RpcError::invalid_params)
+            })
+            .collect(),
+        Some(_) => Err(RpcError::invalid_params()),
+    }
+}
+
 fn events_params(params: &Map<String, Value>) -> Result<(u64, Option<u64>), RpcError> {
     if params.keys().any(|key| key != "after" && key != "limit") {
         return Err(RpcError::invalid_params());
     }
+    let integer = |value: &Value| {
+        value
+            .as_f64()
+            .filter(|number| number.is_finite() && number.fract() == 0.0)
+    };
     let after = params
         .get("after")
-        .and_then(Value::as_u64)
-        .ok_or_else(RpcError::invalid_params)?;
+        .and_then(integer)
+        .filter(|number| *number >= 0.0 && *number < 9_007_199_254_740_992.0)
+        .ok_or_else(RpcError::invalid_params)? as u64;
     let limit = match params.get("limit") {
         None => None,
-        Some(value) => match value.as_u64() {
-            Some(limit) if limit >= 1 => Some(limit),
-            _ => return Err(RpcError::invalid_params()),
-        },
+        Some(value) => Some(
+            integer(value)
+                .filter(|number| *number >= 1.0)
+                .ok_or_else(RpcError::invalid_params)?
+                .min(1000.0) as u64,
+        ),
     };
     Ok((after, limit))
 }

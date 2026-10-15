@@ -19,6 +19,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 fn command() -> CommandLine {
     CommandLine {
+        working_directory: None,
         program: std::env::current_exe().unwrap(),
         args: ["--exact", "child", "--nocapture"]
             .map(OsString::from)
@@ -140,6 +141,11 @@ fn child() {
         return;
     };
     match behavior.strip_prefix("supervisor-child-behavior:").unwrap() {
+        "stdin-eof" => {
+            ready();
+            assert_eq!(std::io::stdin().read(&mut [0]).unwrap(), 0);
+            println!("cwd={}", std::env::current_dir().unwrap().display());
+        }
         "ready" => {
             ready();
             idle();
@@ -681,6 +687,7 @@ fn ready_timeout_remains_active_after_exit_while_draining() {
 #[test]
 fn spawn_failure_is_displayed_and_does_not_block_waits() {
     let command = CommandLine {
+        working_directory: None,
         program: std::env::temp_dir().join(format!("missing-supervisor-{TOKEN}")),
         args: vec![],
     };
@@ -708,4 +715,31 @@ fn supervised_mock_authenticates_and_shuts_down_gracefully() {
     let state = exited(&process);
     assert!(state.exit_status.unwrap().success());
     assert!(state.errors.is_empty());
+}
+
+#[test]
+fn held_stdin_stays_open_until_stop_and_working_directory_is_executed() {
+    let directory = std::env::temp_dir();
+    let mut command = command();
+    command.working_directory = Some(directory.clone());
+    let process = Supervisor::spawn(
+        command,
+        &env("stdin-eof"),
+        Options {
+            stdin: mrtklib_egui_supervisor::Stdin::HeldOpen,
+            ..Options::default()
+        },
+        || {},
+    );
+    process.wait_ready().unwrap();
+    assert!(!process.wait_exit(Duration::from_millis(150)));
+    process.stop(TIMEOUT);
+    let state = exited(&process);
+    assert_eq!(state.exit_status.unwrap().code(), Some(0));
+    assert!(
+        state
+            .lines
+            .iter()
+            .any(|line| line.text == format!("cwd={}", directory.display()))
+    );
 }
