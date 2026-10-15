@@ -8,6 +8,10 @@ mod view;
 use controller::Controller;
 use eframe::egui::{self, Color32, RichText};
 
+/// Space kept between a modal dialog and the window edges: the popup frame's inner
+/// margin (6 px per side) plus a small gap to the window border.
+const DIALOG_MARGIN: f32 = 32.0;
+
 fn main() -> eframe::Result {
     mrtklib_egui_common::run_with_context("mrtklib-egui-navi", [430.0, 300.0], |ctx| {
         let ctx = ctx.clone();
@@ -103,13 +107,18 @@ impl eframe::App for Navi {
         let mut confirm = false;
         let mut cancel = false;
         if let Some(dialog) = &mut self.controller.overwrite_dialog {
+            // The modal is drawn inside the compact navi window: bound it by the window,
+            // wrap long paths and scroll them, so that the buttons always stay visible.
+            let window = ui.ctx().content_rect().size();
             egui::Modal::new(egui::Id::new("overwrite outputs")).show(ui.ctx(), |ui| {
-                ui.set_max_width(600.0);
+                ui.set_max_width((window.x - DIALOG_MARGIN).clamp(0.0, 600.0));
                 ui.heading("Existing output files");
-                ui.label(format!("Working directory: {directory}"));
+                let buttons = ui.spacing().interact_size.y + 2.0 * ui.spacing().item_spacing.y;
+                let list = window.y - DIALOG_MARGIN - ui.min_rect().height() - buttons;
                 egui::ScrollArea::vertical()
-                    .max_height(300.0)
+                    .max_height(list.max(0.0))
                     .show(ui, |ui| {
+                        ui.label(format!("Working directory: {directory}"));
                         for (row, label) in dialog.paths.iter_mut().zip(labels) {
                             ui.group(|ui| {
                                 ui.label(label);
