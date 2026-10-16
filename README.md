@@ -51,6 +51,19 @@ MRTKLIB_EGUI_SETTINGS_DIR="$HOME/mrtklib-navi" \
 - The configuration is read when navi starts. After editing it, restart navi.
 - `mrtk` exits when navi exits, also when navi is killed.
 
+## Nix (optional)
+
+Nix users can use the flake instead of installing the Rust toolchain and run-time libraries themselves. It covers the GUI only; build `mrtk` as above.
+
+```sh
+nix develop                  # shell with cargo, rustfmt, clippy and rumdl
+MRTKLIB_EGUI_MRTK=/path/to/MRTKLIB/build/mrtk \
+MRTKLIB_EGUI_SETTINGS_DIR="$HOME/mrtklib-navi" \
+  nix run .#navi
+```
+
+With `nix run` both variables are needed: the executable is in the read-only Nix store, so there is no `mrtk` next to it and settings cannot be saved there. The run-time library path also includes `/run/opengl-driver/lib`, where NixOS keeps the GPU driver; this has been tried on NixOS only.
+
 ## Checks
 
 The checks for changes are listed in [`AGENTS.md`](AGENTS.md). Tests against a real `mrtk` are described in [docs/design.md](docs/design.md#real-server-tests).
