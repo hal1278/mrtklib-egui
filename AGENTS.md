@@ -82,7 +82,7 @@ In addition to mock coverage, tests needing the real `mrtk` are opt-in: set `MRT
 
 ## Edit scope
 
-Allowed: `Cargo.toml`, `Cargo.lock`, `crates/**`, `src/**`, `xtask/**`, `tests/**`, `docs/**`, `AGENTS.md`, `rumdl.toml`, `.gitignore`, and CI files when working on CI.
+Allowed: `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE-*`, `flake.nix`, `crates/**`, `src/**`, `xtask/**`, `tests/**`, `docs/**`, `AGENTS.md`, `rumdl.toml`, `.gitignore`, and CI files when working on CI.
 
 Do not edit: Git metadata, generated caches, unrelated editor settings, or files outside this repository.
 Changes to MRTKLIB are made in the MRTKLIB repository, not here.
