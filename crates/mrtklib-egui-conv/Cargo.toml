@@ -8,3 +8,6 @@ publish.workspace = true
 [dependencies]
 eframe.workspace = true
 mrtklib-egui-common.workspace = true
+mrtklib-egui-supervisor = { path = "../mrtklib-egui-supervisor" }
+serde.workspace = true
+serde_json.workspace = true

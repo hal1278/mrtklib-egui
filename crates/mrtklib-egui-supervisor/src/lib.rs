@@ -78,9 +78,18 @@ pub enum Stdin {
     HeldOpen,
 }
 
+/// Whether this process reports the `mrtk run` readiness line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReadinessMode {
+    #[default]
+    ReadyLine,
+    None,
+}
+
 /// Bounds and startup timing.
 #[derive(Clone, Debug)]
 pub struct Options {
+    pub readiness: ReadinessMode,
     pub stdin: Stdin,
     /// Default 64 KiB, far above normal output; bounds pending bytes per pipe.
     /// An overlong display line is replaced entirely by a visible marker.
@@ -103,6 +112,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            readiness: ReadinessMode::ReadyLine,
             stdin: Stdin::Null,
             max_line_bytes: 64 * 1024,
             max_display_chars: 1000,
@@ -127,6 +137,7 @@ pub struct OutputLine {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Readiness {
+    NotRequired,
     Waiting,
     Ready { url: String },
     Failed(String),
@@ -203,7 +214,10 @@ impl Shared {
 
     fn fail(&self, inner: &mut Inner, text: &str) {
         self.error(inner, text);
-        if matches!(inner.state.readiness, Readiness::Waiting) {
+        if matches!(
+            inner.state.readiness,
+            Readiness::Waiting | Readiness::NotRequired
+        ) {
             inner.state.readiness = Readiness::Failed(self.display(text));
         }
     }
@@ -316,7 +330,10 @@ impl Supervisor {
                 state: State {
                     lines: VecDeque::new(),
                     dropped_lines: 0,
-                    readiness: Readiness::Waiting,
+                    readiness: match options.readiness {
+                        ReadinessMode::ReadyLine => Readiness::Waiting,
+                        ReadinessMode::None => Readiness::NotRequired,
+                    },
                     exit_status: None,
                     errors: VecDeque::new(),
                     dropped_errors: 0,
@@ -431,6 +448,7 @@ impl Supervisor {
                 }
                 Readiness::Ready { url } => return Ok(url.clone()),
                 Readiness::Failed(reason) => return Err(reason.clone()),
+                Readiness::NotRequired => return Err("this process has no readiness line".into()),
             }
         }
     }
@@ -648,14 +666,23 @@ fn monitor(child: &Mutex<Option<Child>>, shared: &Shared, started: Instant) {
 fn read_pipe(mut pipe: Box<dyn Read + Send>, stream: Stream, shared: &Shared) {
     let mut line = Line::default();
     let mut buffer = [0; 8192];
+    let mut after_cr = false;
     loop {
         match pipe.read(&mut buffer) {
             Ok(0) => break,
             Ok(length) => {
                 for &byte in &buffer[..length] {
-                    if byte == b'\n' {
+                    if after_cr && byte == b'\n' {
+                        after_cr = false;
+                        continue;
+                    }
+                    after_cr = false;
+                    // Machine-readable lines retain their LF framing, including
+                    // embedded CR bytes. Only display lines use CR as a delimiter.
+                    if byte == b'\n' || (byte == b'\r' && !line.is_ready(stream, shared)) {
                         line.finish(stream, shared);
                         line = Line::default();
+                        after_cr = byte == b'\r';
                     } else {
                         line.push(byte, stream, shared);
                     }
@@ -711,8 +738,11 @@ impl Default for Line {
 }
 
 impl Line {
-    fn is_ready(&self, stream: Stream) -> bool {
-        stream == Stream::Stderr && self.prefix_matches && self.prefix_bytes == READY_PREFIX.len()
+    fn is_ready(&self, stream: Stream, shared: &Shared) -> bool {
+        shared.options.readiness == ReadinessMode::ReadyLine
+            && stream == Stream::Stderr
+            && self.prefix_matches
+            && self.prefix_bytes == READY_PREFIX.len()
     }
 
     fn push(&mut self, byte: u8, stream: Stream, shared: &Shared) {
@@ -742,7 +772,7 @@ impl Line {
             return;
         }
         self.reported = true;
-        if self.is_ready(stream) {
+        if self.is_ready(stream, shared) {
             shared.ready(None);
         } else {
             shared.output(
@@ -763,7 +793,7 @@ impl Line {
         if self.bytes.last() == Some(&b'\r') {
             self.bytes.pop();
         }
-        if self.is_ready(stream) {
+        if self.is_ready(stream, shared) {
             shared.ready(Some(&self.bytes[READY_PREFIX.len()..]));
         } else {
             shared.output(stream, &String::from_utf8_lossy(&self.bytes));
@@ -842,6 +872,67 @@ mod tests {
                 .contains("cannot read Stderr: ***")
         );
         assert!(!format!("{state:?}").contains("unit-secret"));
+    }
+
+    #[test]
+    fn display_cr_lf_crlf_and_limits_work_across_read_boundaries() {
+        struct Chunks {
+            bytes: std::io::Cursor<Vec<u8>>,
+            size: usize,
+        }
+        impl Read for Chunks {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                let count = bytes.len().min(self.size);
+                self.bytes.read(&mut bytes[..count])
+            }
+        }
+        for size in [1, 2, 7, 8192] {
+            let supervisor = Supervisor::spawn(
+                CommandLine {
+                    program: PathBuf::new(),
+                    args: vec![],
+                    working_directory: None,
+                },
+                &[],
+                Options {
+                    readiness: ReadinessMode::None,
+                    max_line_bytes: 32,
+                    ..Options::default()
+                },
+                || {},
+            );
+            let bytes = format!(
+                "first\rsecond\r\nthird\n{}\rafter long\ruser:pass@host\rfinal",
+                "x".repeat(64)
+            )
+            .into_bytes();
+            read_pipe(
+                Box::new(Chunks {
+                    bytes: std::io::Cursor::new(bytes),
+                    size,
+                }),
+                Stream::Stderr,
+                &supervisor.shared,
+            );
+            assert_eq!(
+                supervisor
+                    .state()
+                    .lines
+                    .iter()
+                    .map(|line| line.text.clone())
+                    .collect::<Vec<_>>(),
+                [
+                    "first",
+                    "second",
+                    "third",
+                    "(a line longer than 32 bytes was not shown)",
+                    "after long",
+                    "***@host",
+                    "final"
+                ],
+                "chunk size {size}"
+            );
+        }
     }
 
     #[test]

@@ -19,7 +19,7 @@ This repository does not reimplement MRTKLIB and does not link to it.
 
 - The backend is the `mrtk` executable, started as a child process.
 - `mrtk run` is controlled only through the RPC. Never use the telnet console.
-- `mrtk post` and `mrtk convert` use argv, files, the machine-readable progress output and cancel through stdin.
+- `mrtk post` and `mrtk convert` target argv, files, machine-readable progress output and cancel through stdin. The Conv first slice is an explicit exception: `convert` has no progress/cancel interface yet, so it displays stderr without parsing and offers no Abort action (see `docs/design.md`).
 - MRTKLIB provides configuration handling (schema, read, write, validate). The GUI does not parse or write MRTKLIB TOML itself.
 - Never parse human-readable MRTKLIB output (console text, stderr progress lines, log messages) to obtain state.
   Showing such text to the user as-is is fine.

@@ -200,6 +200,11 @@ fn child() {
                 .write_all(b"invalid \xff\xfe\r\ncarriage\r\r\nlast-no-newline")
                 .unwrap();
         }
+        "cr-ready" => {
+            std::io::stderr()
+                .write_all(format!("MRTK-RPC-READY {{\r\"url\":\"{URL}\"}}\r\n").as_bytes())
+                .unwrap();
+        }
         "invalid-ready" => {
             std::io::stderr()
                 .write_all(b"MRTK-RPC-READY {\"url\":\"\xff\"}\n")
@@ -534,7 +539,7 @@ fn lossy_utf8_one_cr_and_unterminated_final_line() {
     let process = spawn("bytes", Options::default());
     process.wait_ready().unwrap();
     let state = exited(&process);
-    for text in ["invalid ��", "carriage\r", "last-no-newline"] {
+    for text in ["invalid ��", "carriage", "last-no-newline"] {
         assert!(
             state.lines.iter().any(|line| line.text == text),
             "{state:?}"
@@ -742,4 +747,57 @@ fn held_stdin_stays_open_until_stop_and_working_directory_is_executed() {
             .iter()
             .any(|line| line.text == format!("cwd={}", directory.display()))
     );
+}
+
+#[test]
+fn finite_process_has_no_readiness_timeout_or_exit_before_ready_failure() {
+    for behavior in ["exit", "malformed"] {
+        let process = spawn(
+            behavior,
+            Options {
+                readiness: mrtklib_egui_supervisor::ReadinessMode::None,
+                ready_timeout: Duration::ZERO,
+                ..Options::default()
+            },
+        );
+        let state = exited(&process);
+        assert_eq!(state.readiness, Readiness::NotRequired);
+        assert!(state.errors.is_empty(), "{state:?}");
+        assert!(
+            process
+                .wait_ready()
+                .unwrap_err()
+                .contains("no readiness line")
+        );
+        if behavior == "malformed" {
+            assert!(
+                state
+                    .lines
+                    .iter()
+                    .any(|line| line.text == "MRTK-RPC-READY broken-***")
+            );
+        }
+    }
+    let process = spawn(
+        "never",
+        Options {
+            readiness: mrtklib_egui_supervisor::ReadinessMode::None,
+            ready_timeout: Duration::from_millis(10),
+            ..Options::default()
+        },
+    );
+    assert!(!process.wait_exit(Duration::from_millis(150)));
+    assert_eq!(process.state().readiness, Readiness::NotRequired);
+    assert!(process.state().errors.is_empty());
+    process.kill();
+    assert!(exited(&process).errors.is_empty());
+}
+
+#[test]
+fn machine_lines_keep_lf_framing_and_embedded_carriage_returns() {
+    let process = spawn("cr-ready", Options::default());
+    assert_eq!(process.wait_ready().unwrap(), URL);
+    let state = exited(&process);
+    assert!(state.errors.is_empty());
+    assert!(!state.lines.iter().any(|line| line.stream == Stream::Stderr));
 }

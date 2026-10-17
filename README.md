@@ -9,7 +9,8 @@ The steps below build the applications from source on Linux, for developers. The
 | Application | State |
 |---|---|
 | `mrtklib-egui-navi` | Starts and stops `mrtk run` and shows its solution. Settings cannot be edited in the GUI yet. |
-| `mrtklib-egui-post`, `-conv`, `-plot` | Empty windows. |
+| `mrtklib-egui-conv` | RTKCONV-like conversion window: input/output paths, conversion options, command preview, overwrite confirmation, stderr and exit status, and JSON GUI settings. Abort is unavailable until MRTKLIB has a progress/cancel interface. |
+| `mrtklib-egui-post`, `-plot` | Empty windows. |
 
 Windows is not supported yet: `mrtk run` needs the MRTKLIB Windows port first.
 

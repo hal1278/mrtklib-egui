@@ -2012,6 +2012,9 @@ version = "0.0.0"
 dependencies = [
  "eframe",
  "mrtklib-egui-common",
+ "mrtklib-egui-supervisor",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
