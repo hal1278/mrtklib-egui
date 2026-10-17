@@ -203,8 +203,9 @@ Each connection starts with an initial synchronization. Events missed while disc
 - `MRTKLIB_EGUI_SETTINGS_DIR` selects a development settings directory. A relative override resolves against the current directory, an empty override is an error, and there is no fallback. Otherwise the directory is the GUI executable's directory. Navi runs its child there and always supplies the explicit `.toml` configuration described above: RTKNAVI keeps settings and navigation data next to its executable; TOML is MRTKLIB's canonical format and the future `saveConfig` accepts only `.toml`. An explicit extension avoids the implicit `./rtkrcv.conf`, which MRTKLIB reads as the legacy format.
 - Relative configuration paths resolve against the settings directory, and `rtkrcv.nav` is saved there. The backend reads configuration at process startup; editing it requires an application restart until configuration RPC exists. An unwritable settings directory makes navigation data saving and relative outputs fail; there is no fallback location.
 - Positioning settings can be loaded from and saved to MRTKLIB TOML files. Whether to share them with the CLI is the user's choice.
-- Positioning settings are stored as TOML in that directory, read and written through MRTKLIB. Conv first-slice GUI controls instead use the JSON settings file described above; they are argv controls, not a parsed MRTKLIB configuration.
+- The last positioning settings of each application are also stored as TOML in that directory, read and written through MRTKLIB.
   Rationale: this follows RTKLIB, whose GUIs keep their own settings and import or export the CLI option format. Editing a CLI TOML file in place would require rewriting parts of it while keeping comments and unknown keys.
+- Conv's controls are `mrtk convert` arguments, not an MRTKLIB configuration, so conv keeps them in the JSON settings file described in the Conv section.
 
 ## Real-server tests
 
