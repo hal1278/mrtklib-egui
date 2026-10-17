@@ -331,7 +331,11 @@ mod tests {
                 c.close_dialog = false; // Wait action.
                 assert!(c.busy());
             }
-            until(&mut c, |c| !c.busy());
+            // busy() asks the supervisor directly, while `process` is the copy taken by
+            // tick(): wait until that copy also holds the exit status.
+            until(&mut c, |c| {
+                !c.busy() && c.process.as_ref().is_some_and(|p| p.exit_status.is_some())
+            });
             assert_eq!(
                 c.process.as_ref().unwrap().exit_status.unwrap().success(),
                 !kill
