@@ -133,18 +133,43 @@ impl Controller {
         self.override_hz(slot)
             .or_else(|| summary::rate(data.points.iter().map(|p| p.time_ns)))
     }
-    pub fn set_override_hz(&mut self, slot: usize, hz: Option<f64>) -> Result<(), String> {
-        if hz.is_some_and(|hz| !hz.is_finite() || hz <= 0.0) {
-            return Err("Rate must be positive and finite".into());
+    pub fn rate_text(&self, slot: usize) -> String {
+        let Some(hz) = self.rate(slot) else {
+            return "—".into();
+        };
+        let path = self.last_file(slot);
+        match self
+            .settings
+            .manual_rates
+            .iter()
+            .find(|rate| Some(&rate.path) == path.as_ref())
+        {
+            Some(rate) => format!(
+                "{} Hz (manual)",
+                rate.entered.clone().unwrap_or_else(|| hz.to_string())
+            ),
+            None => format!("{} Hz", summary::rate_text(hz)),
         }
+    }
+    pub fn set_override_hz(&mut self, slot: usize, entered: Option<&str>) -> Result<(), String> {
+        let hz = entered
+            .map(|text| {
+                text.parse::<f64>()
+                    .ok()
+                    .filter(|hz| hz.is_finite() && *hz > 0.0)
+                    .ok_or("Rate must be positive and finite")
+            })
+            .transpose()?;
         let path = self
             .last_file(slot)
             .ok_or("Open a file before setting its rate")?;
         self.settings.manual_rates.retain(|rate| rate.path != path);
         if let Some(hz) = hz {
-            self.settings
-                .manual_rates
-                .push(settings::ManualRate { path, hz });
+            self.settings.manual_rates.push(settings::ManualRate {
+                path,
+                hz,
+                entered: entered.map(str::to_owned),
+            });
         }
         self.persist();
         Ok(())
@@ -508,6 +533,17 @@ mod tests {
         };
         assert!(c.apply_options(invalid).is_err());
         assert_eq!(c.settings.options, options);
+    }
+    #[test]
+    fn manual_rate_display_preserves_the_entered_precision() {
+        let mut c = Controller::fixture(reader::synthetic());
+        c.settings.last_file = Some("rate.pos".into());
+        assert_eq!(c.rate_text(0), "1.00 Hz");
+        c.set_override_hz(0, Some("20.0001")).unwrap();
+        assert_eq!(c.rate_text(0), "20.0001 Hz (manual)");
+        assert_eq!(c.rate(0), Some(20.0001));
+        c.set_override_hz(0, Some("1.0000")).unwrap();
+        assert_eq!(c.rate_text(0), "1.0000 Hz (manual)");
     }
     #[test]
     fn asynchronous_open_failure_retains_data_and_clear_discards_it() {

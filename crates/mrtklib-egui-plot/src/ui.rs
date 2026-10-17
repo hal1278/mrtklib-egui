@@ -448,11 +448,14 @@ impl PlotApp {
                     );
                 }
                 if ui
-                    .button(if self.controller.settings.height {
-                        "Height"
-                    } else {
-                        "U"
-                    })
+                    .add_sized(
+                        [60.0, ui.spacing().interact_size.y],
+                        egui::Button::new(if self.controller.settings.height {
+                            "Height"
+                        } else {
+                            "U"
+                        }),
+                    )
                     .on_hover_text("Third component: Up / ellipsoidal height")
                     .clicked()
                 {
@@ -461,10 +464,10 @@ impl PlotApp {
             }
             if ui
                 .button("All")
-                .on_hover_text("Show all qualities")
+                .on_hover_text("Toggle all qualities")
                 .clicked()
             {
-                self.controller.settings.qualities.all();
+                self.controller.settings.qualities.toggle_all();
             }
             for (i, label) in ["FIX", "FLOAT", "SBAS", "DGPS", "SINGLE", "PPP"]
                 .into_iter()
@@ -569,24 +572,7 @@ impl PlotApp {
     }
 
     fn rate_control(&mut self, ui: &mut egui::Ui, slot: usize) {
-        let text = self.controller.rate(slot).map_or_else(
-            || "—".into(),
-            |hz| {
-                let number = if !(0.0001..1e6).contains(&hz) {
-                    format!("{hz:.5e}")
-                } else {
-                    hz.to_string()
-                };
-                format!(
-                    "{number} Hz{}",
-                    if self.controller.override_hz(slot).is_some() {
-                        " (manual)"
-                    } else {
-                        ""
-                    }
-                )
-            },
-        );
+        let text = self.controller.rate_text(slot);
         let button = ui
             .add_enabled(!self.controller.loading, egui::Button::new(&text))
             .on_hover_text("Sample rate: click to override or use estimated");
@@ -600,9 +586,12 @@ impl PlotApp {
         if button.clicked() {
             self.rate_drafts[slot] = self
                 .controller
-                .override_hz(slot)
-                .or_else(|| self.controller.rate(slot))
-                .map(|hz| hz.to_string())
+                .settings
+                .manual_rates
+                .iter()
+                .find(|rate| Some(rate.path.clone()) == self.controller.last_file(slot))
+                .map(|rate| rate.entered.clone().unwrap_or_else(|| rate.hz.to_string()))
+                .or_else(|| self.controller.rate(slot).map(|hz| hz.to_string()))
                 .unwrap_or_default();
         }
         egui::Popup::menu(&button).show(|ui| {
@@ -628,7 +617,10 @@ impl PlotApp {
                         .add_enabled(hz.is_some(), egui::Button::new("Apply override"))
                         .clicked()
                     {
-                        if let Err(error) = self.controller.set_override_hz(slot, hz) {
+                        if let Err(error) = self
+                            .controller
+                            .set_override_hz(slot, Some(&self.rate_drafts[slot]))
+                        {
                             self.controller.error = Some(error);
                         }
                         ui.close();
@@ -749,9 +741,13 @@ impl PlotApp {
             }
         }
     }
+    #[cfg(test)]
     fn epoch_text(&self) -> String {
+        self.cursor_status(self.hovered).0
+    }
+    fn cursor_status(&self, epoch: Option<(usize, usize)>) -> (String, bool) {
         let o = &self.controller.settings.options;
-        if let Some((source, index)) = self.hovered
+        if let Some((source, index)) = epoch
             && let Some(s) = self
                 .controller
                 .samples
@@ -777,6 +773,7 @@ impl PlotApp {
                 time_label(o)
             );
             let suffix = format!("  Q={}", s.quality);
+            let mut both_shown = false;
             let values = if self.controller.settings.plot == 2 {
                 format!(
                     "NS={:.0} AGE={:.2} s RATIO={:.1}",
@@ -788,6 +785,7 @@ impl PlotApp {
                 let full = format!("{prefix}{both}{suffix}");
                 let fits = self.status_text_width(&full) <= self.status_width;
                 if fits {
+                    both_shown = true;
                     both
                 } else if self.controller.settings.cursor_llh {
                     llh
@@ -797,10 +795,10 @@ impl PlotApp {
             } else {
                 enu
             };
-            return format!("{prefix}{values}{suffix}");
+            return (format!("{prefix}{values}{suffix}"), both_shown);
         }
         if let Some((panel, [x, y])) = self.cursor {
-            return if self.controller.settings.plot == 0 {
+            let text = if self.controller.settings.plot == 0 {
                 format!("E={x:.4} N={y:.4} m")
             } else {
                 let (label, unit) = if self.controller.settings.plot == 1 {
@@ -828,8 +826,9 @@ impl PlotApp {
                     time_label(o)
                 )
             };
+            return (text, false);
         }
-        String::new()
+        (String::new(), false)
     }
     fn status_text_width(&self, text: &str) -> f32 {
         // Filled from the same layout used by the status panel.
@@ -1252,6 +1251,9 @@ impl PlotApp {
                     ui.painter().clone(),
                     egui::TextStyle::Body.resolve(ui.style()),
                 ));
+                let (cursor_text, _) = self.cursor_status(self.hovered);
+                // Preserve the width decision while the pointer moves to the status button.
+                let both_shown = self.cursor_status(self.hovered.or(self.selected)).1;
                 ui.allocate_ui_with_layout(
                     egui::vec2(self.status_width, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
@@ -1263,7 +1265,7 @@ impl PlotApp {
                                 for line in self.summary().lines() {
                                     ui.add(egui::Label::new(line).extend());
                                 }
-                                ui.add(egui::Label::new(self.epoch_text()).extend());
+                                ui.add(egui::Label::new(cursor_text).extend());
                                 if self.controller.loading {
                                     ui.label("Loading solution...");
                                 }
@@ -1286,7 +1288,10 @@ impl PlotApp {
                         self.controller.persist();
                     }
                     ui.horizontal(|ui| {
+                        // Hidden while both fit. The fit test uses the text column only,
+                        // whose width this button column does not change.
                         if self.controller.settings.plot != 2
+                            && !both_shown
                             && ui
                                 .button(if self.controller.settings.cursor_llh {
                                     "LLH"

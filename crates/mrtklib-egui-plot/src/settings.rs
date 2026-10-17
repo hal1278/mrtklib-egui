@@ -98,14 +98,17 @@ impl QualityFilter {
     pub fn visible(&self, quality: u8) -> bool {
         self.0.get(usize::from(quality)).copied().unwrap_or(false)
     }
-    pub fn all(&mut self) {
-        self.0.fill(true);
+    pub fn toggle_all(&mut self) {
+        let enable = !self.0.iter().all(|visible| *visible);
+        self.0.fill(enable);
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ManualRate {
     pub path: PathBuf,
     pub hz: f64,
+    #[serde(default)]
+    pub entered: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -170,11 +173,14 @@ pub(crate) fn load(path: &Path) -> Result<Settings, String> {
         }
         settings.options.validate()?;
         let mut paths = std::collections::BTreeSet::new();
-        if settings
-            .manual_rates
-            .iter()
-            .any(|r| !r.hz.is_finite() || r.hz <= 0.0 || !paths.insert(&r.path))
-        {
+        if settings.manual_rates.iter().any(|r| {
+            !r.hz.is_finite()
+                || r.hz <= 0.0
+                || r.entered
+                    .as_ref()
+                    .is_some_and(|text| text.parse::<f64>().ok() != Some(r.hz))
+                || !paths.insert(&r.path)
+        }) {
             return Err("invalid or duplicate manual file rate".into());
         }
         if settings.plot >= PLOTS.len() {
@@ -200,7 +206,12 @@ mod tests {
         assert!(q.visible(0));
         assert!(!q.visible(8));
         q.0.fill(false);
-        q.all();
+        q.toggle_all();
+        assert_eq!(q.0, [true; 8]);
+        q.toggle_all();
+        assert_eq!(q.0, [false; 8]);
+        q.0[1] = true;
+        q.toggle_all();
         assert_eq!(q.0, [true; 8]);
     }
     #[test]
@@ -235,6 +246,7 @@ mod tests {
             manual_rates: vec![ManualRate {
                 path: "入力.pos".into(),
                 hz: 1.0,
+                entered: Some("1.00000".into()),
             }],
             qualities: QualityFilter([false, false, false, false, false, false, true, false]),
             options: Options {

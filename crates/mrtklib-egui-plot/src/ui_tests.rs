@@ -725,6 +725,19 @@ fn status_coordinates_use_measured_width_and_the_llh_enu_choice() {
 }
 
 #[test]
+fn coordinate_button_is_hidden_when_both_llh_and_enu_fit() {
+    let mut h = harness(1);
+    hover_epoch(&mut h, 0);
+    assert!(h.state().epoch_text().contains("°") && h.state().epoch_text().contains("E="));
+    assert!(h.query_by_label("ENU").is_none());
+    h.set_size(egui::vec2(650.0, INITIAL_SIZE[1]));
+    h.run();
+    hover_epoch(&mut h, 0);
+    assert!(!h.state().epoch_text().contains("°"));
+    assert!(h.query_by_label("ENU").is_some());
+}
+
+#[test]
 fn info_indicator_retains_each_dataset_diagnostics_when_window_closes() {
     let mut c = two_solutions(0);
     c.dataset.as_mut().unwrap().malformed = 3;
@@ -761,9 +774,27 @@ fn component_controls_only_show_for_position_and_height_changes_only_third_range
     assert!(h.query_by_label("Plot1").is_none());
     select(&mut h, "Gnd Trk", "Position");
     let before = h.state().viewport.clone();
+    let button_rect = h.get_by_label("U").rect();
+    let toolbar_rect = h.get_by_label("FIX").rect();
+    let panel_heights = h
+        .state()
+        .geometry
+        .unwrap()
+        .frames
+        .map(|frame| frame.unwrap().height());
     h.get_by_label("U").click();
     h.run();
     assert!(h.state().controller.settings.height);
+    assert_eq!(h.get_by_label("Height").rect(), button_rect);
+    assert_eq!(h.get_by_label("FIX").rect(), toolbar_rect);
+    assert_eq!(
+        h.state()
+            .geometry
+            .unwrap()
+            .frames
+            .map(|frame| frame.unwrap().height()),
+        panel_heights
+    );
     assert_eq!(h.state().viewport.time, before.time);
     assert_eq!(h.state().viewport.vertical[..2], before.vertical[..2]);
     for s in &h.state().controller.samples {
@@ -777,6 +808,15 @@ fn component_controls_only_show_for_position_and_height_changes_only_third_range
 #[test]
 fn all_quality_button_restores_each_quality_and_every_control_fits_default_width() {
     let mut h = harness(1);
+    let before = h.state().viewport.clone();
+    h.get_by_label("All").click();
+    h.run();
+    assert_eq!(h.state().controller.settings.qualities.0, [false; 8]);
+    assert!(h.state().controller.samples.is_empty());
+    h.get_by_label("All").click();
+    h.run();
+    assert_eq!(h.state().controller.settings.qualities.0, [true; 8]);
+    assert_eq!(h.state().viewport, before);
     only_ppp(&mut h);
     h.get_by_label("PPP").click();
     h.run();
@@ -818,7 +858,7 @@ fn snapshot_two_dataset_status() {
         "/a/long/directory/for/the/first/solution/complete-first-solution-filename.pos".into(),
     );
     c.settings.last_file2 = Some("/another/long/directory/second-solution-filename.pos".into());
-    c.set_override_hz(0, Some(1.0)).unwrap();
+    c.set_override_hz(0, Some("1")).unwrap();
     let mut h = harness_with_controller(c);
     hover_epoch(&mut h, 1);
     save(&mut h, "snapshot_plot_two_dataset_status");

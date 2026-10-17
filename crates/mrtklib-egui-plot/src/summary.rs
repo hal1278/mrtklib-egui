@@ -9,7 +9,21 @@ pub(crate) fn rate(times: impl IntoIterator<Item = i128>) -> Option<f64> {
         .map(|w| w[1] - w[0])
         .filter(|dt| *dt >= 1_000_000)
         .min()
-        .map(|dt| 1e9 / dt as f64)
+        .map(|dt| {
+            // The displayed precision is also the precision used for interval percentages.
+            format!("{:.2e}", 1e9 / dt as f64)
+                .parse()
+                .expect("finite positive rate")
+        })
+}
+
+pub(crate) fn rate_text(hz: f64) -> String {
+    let decimals = 2 - hz.log10().floor() as i32;
+    if (0..=6).contains(&decimals) {
+        format!("{hz:.precision$}", precision = decimals as usize)
+    } else {
+        format!("{hz:.2e}")
+    }
 }
 
 /// rtktrace src/analysis/statistics.cpp:37–65; inclusive interval, rounded then +1.
@@ -162,6 +176,43 @@ mod tests {
         );
         assert!(line("1", &samples, &d, &Options::default(), true, None).contains("Q1=1 (33.3%)"));
         assert!(!line("1", &samples[..1], &d, &Options::default(), true, Some(2.0)).contains('%'));
+    }
+    #[test]
+    fn estimated_rates_use_three_significant_digits_for_display_and_percentages() {
+        for (interval_ns, hz, text) in [
+            (999_000_000, 1.0, "1.00"),
+            (30_000_000_000, 0.0333, "0.0333"),
+            (50_000_000, 20.0, "20.0"),
+        ] {
+            let estimate = rate([0, interval_ns]).unwrap();
+            assert_eq!(estimate, hz);
+            assert_eq!(rate_text(estimate), text);
+        }
+        let d = crate::reader::synthetic();
+        let template = crate::data::samples_with_origin(&d, None, 0)[0].clone();
+        let mut samples: Vec<_> = (0..1000)
+            .map(|i| Sample {
+                time: template.time + f64::from(i),
+                time_ns: template.time_ns + i128::from(i) * 1_000_000_000,
+                quality: 1,
+                ..template.clone()
+            })
+            .collect();
+        samples[1].time_ns -= 1_000_000;
+        assert!(
+            line("1", &samples, &d, &Options::default(), true, None).contains("Q1=1000 (100.0%)")
+        );
+        assert!(
+            line(
+                "1",
+                &samples,
+                &d,
+                &Options::default(),
+                true,
+                Some(1.001001001)
+            )
+            .contains("Q1=1000 (99.9%)")
+        );
     }
     #[test]
     fn expected_interval_percentages_do_not_clamp_duplicates() {
