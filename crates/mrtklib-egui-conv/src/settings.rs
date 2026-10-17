@@ -99,6 +99,7 @@ pub(crate) struct ConvertOptions {
     pub receiver_options: String,
     pub tolerance: String,
     pub frequencies: u8,
+    pub signal_mask: crate::signal_mask::SignalMask,
 }
 impl Default for ConvertOptions {
     fn default() -> Self {
@@ -122,11 +123,13 @@ impl Default for ConvertOptions {
             receiver_options: String::new(),
             tolerance: "0.005".into(),
             frequencies: 5,
+            signal_mask: Default::default(),
         }
     }
 }
 impl ConvertOptions {
     pub fn validate(&self) -> Result<(), String> {
+        self.signal_mask.allow_list()?;
         if !VERSIONS.contains(&self.version.as_str()) || !(1..=5).contains(&self.frequencies) {
             return Err("invalid RINEX version or frequency count".into());
         }
@@ -220,6 +223,7 @@ pub(crate) fn load(path: &Path) -> (Settings, Option<String>) {
         {
             return Err("invalid RINEX version or frequency count".into());
         }
+        settings.options.signal_mask.validate_shape()?;
         Ok(settings)
     });
     match result {
@@ -242,6 +246,15 @@ pub(crate) fn save(path: &Path, settings: &Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_without_a_signal_mask_keep_all_signals_selected() {
+        let options: ConvertOptions = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            options.signal_mask,
+            crate::signal_mask::SignalMask::default()
+        );
+    }
+
     #[test]
     fn json_filename_uses_the_gui_executable_stem() {
         assert_eq!(
@@ -289,12 +302,14 @@ mod tests {
         };
         settings.outputs[1].edited = true;
         settings.options.receiver_options = "-A -B".into();
+        settings.options.signal_mask.0[2][16] = false;
         save(&path, &settings).unwrap();
         assert_eq!(load(&path), (settings, None));
         for bytes in [
             "{broken",
             r#"{"format":99}"#,
             r#"{"options":{"frequencies":0}}"#,
+            r#"{"options":{"signal_mask":[[],[],[],[],[],[],[]]}}"#,
         ] {
             std::fs::write(&path, bytes).unwrap();
             let (settings, warning) = load(&path);

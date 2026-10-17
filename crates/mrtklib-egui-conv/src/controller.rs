@@ -27,6 +27,8 @@ pub(crate) struct Controller {
     preview: String,
     notify: Arc<dyn Fn() + Send + Sync>,
     saved: bool,
+    #[cfg(test)]
+    process_launch_allowed: bool,
 }
 
 impl Controller {
@@ -66,6 +68,30 @@ impl Controller {
             preview: String::new(),
             notify: Arc::new(notify),
             saved: false,
+            #[cfg(test)]
+            process_launch_allowed: true,
+        };
+        controller.refresh_outputs(false);
+        controller
+    }
+
+    #[cfg(test)]
+    pub fn for_ui_tests(settings: Settings, cwd: PathBuf) -> Self {
+        let mut controller = Self {
+            settings,
+            program: Ok(cwd.join("mrtk")),
+            settings_file: Ok(cwd.join("gui.json")),
+            cwd: Ok(cwd),
+            supervisor: None,
+            process: None,
+            overwrite: None,
+            close_dialog: false,
+            closing: false,
+            error: None,
+            preview: String::new(),
+            notify: Arc::new(|| {}),
+            saved: false,
+            process_launch_allowed: false,
         };
         controller.refresh_outputs(false);
         controller
@@ -149,6 +175,11 @@ impl Controller {
     }
 
     fn start(&mut self, command: CommandLine) {
+        #[cfg(test)]
+        assert!(
+            self.process_launch_allowed,
+            "process launch is forbidden in UI tests"
+        );
         self.preview = command.preview();
         let notify = Arc::clone(&self.notify);
         self.supervisor = Some(Supervisor::spawn(

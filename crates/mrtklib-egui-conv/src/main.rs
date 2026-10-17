@@ -2,14 +2,15 @@
 
 mod command;
 mod controller;
+mod file_dialog;
 mod naming;
-mod picker;
 mod settings;
+mod signal_mask;
 mod ui;
 mod view;
 
 fn main() -> eframe::Result {
-    mrtklib_egui_common::run_with_context("mrtklib-egui-conv", [760.0, 700.0], |ctx| {
+    mrtklib_egui_common::run_with_context("mrtklib-egui-conv", ui::INITIAL_SIZE, |ctx| {
         ui::Conv::new(ctx)
     })
 }

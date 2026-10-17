@@ -2,11 +2,15 @@
 
 use crate::{
     controller::Controller,
-    picker::{Picker, Target},
+    file_dialog::{FileDialog, Target},
     settings::{ConvertOptions, FORMATS, OUTPUTS, SYSTEMS, TimeField, VERSIONS},
+    signal_mask::{GROUPS, SignalMask},
 };
 use eframe::egui;
 
+pub(crate) const INITIAL_SIZE: [f32; 2] = [760.0, 700.0];
+const COMBO_HEIGHT: f32 = 400.0;
+const LABEL_WIDTH: f32 = 145.0;
 const INTERVALS: [&str; 12] = [
     "0", "0.05", "0.1", "0.2", "0.25", "0.5", "1", "5", "10", "15", "30", "60",
 ];
@@ -16,17 +20,24 @@ pub(crate) struct Conv {
     controller: Controller,
     options: Option<ConvertOptions>,
     options_error: Option<String>,
-    picker: Option<Picker>,
+    mask: Option<SignalMask>,
+    mask_error: Option<String>,
+    file_dialog: Option<FileDialog>,
     close_focused: bool,
 }
 impl Conv {
     pub fn new(ctx: &egui::Context) -> Self {
         let ctx = ctx.clone();
+        Self::with_controller(Controller::new(move || ctx.request_repaint()))
+    }
+    fn with_controller(controller: Controller) -> Self {
         Self {
-            controller: Controller::new(move || ctx.request_repaint()),
+            controller,
             options: None,
             options_error: None,
-            picker: None,
+            mask: None,
+            mask_error: None,
+            file_dialog: None,
             close_focused: false,
         }
     }
@@ -47,6 +58,7 @@ impl Conv {
                 egui::ComboBox::from_id_salt("interval choices")
                     .selected_text("s")
                     .width(42.0)
+                    .height(COMBO_HEIGHT)
                     .show_ui(ui, |ui| {
                         for choice in INTERVALS {
                             ui.selectable_value(&mut s.interval, choice.into(), choice);
@@ -74,6 +86,7 @@ impl Conv {
             ui.label("Format");
             egui::ComboBox::from_id_salt("input format")
                 .selected_text(FORMATS[s.format].0)
+                .height(COMBO_HEIGHT)
                 .show_ui(ui, |ui| {
                     for (index, (label, _)) in FORMATS.iter().enumerate() {
                         ui.selectable_value(&mut s.format, index, *label);
@@ -85,7 +98,7 @@ impl Conv {
             ui.add_enabled_ui(s.directory_enabled, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut s.directory)
-                        .desired_width(ui.available_width() - 36.0),
+                        .desired_width((ui.available_width() - 36.0).max(0.0)),
                 );
                 if ui.button("...").clicked() {
                     browse = Some((Target::Directory, s.directory.clone()));
@@ -99,37 +112,52 @@ impl Conv {
         }
         let s = &mut self.controller.settings;
         ui.label("RINEX OBS/NAV/GNAV/HNAV/QNAV/LNAV/CNAV/INAV and SBS");
-        egui::Grid::new("outputs").num_columns(3).show(ui, |ui| {
-            for (row, (label, _, _)) in OUTPUTS.iter().enumerate() {
-                let available = s.row_available(row);
-                ui.add_enabled(
-                    available,
-                    egui::Checkbox::new(&mut s.outputs[row].enabled, *label),
-                )
-                .on_disabled_hover_text(if row == 8 {
-                    "SBS is unavailable for RINEX input"
-                } else {
-                    "Separate navigation outputs require RINEX 2.x; Sep NAV is unavailable"
-                });
-                let enabled = s.output_enabled(row);
-                if ui
-                    .add_enabled(
-                        enabled,
-                        egui::TextEdit::singleline(&mut s.outputs[row].path)
-                            .desired_width((ui.available_width() - 44.0).max(50.0)),
-                    )
-                    .changed()
-                {
-                    s.outputs[row].edited = true;
-                }
-                if ui.add_enabled(enabled, egui::Button::new("...")).clicked() {
-                    browse = Some((Target::Output(row), s.outputs[row].path.clone()));
-                }
-                ui.end_row();
-            }
-        });
+        for (row, (label, _, _)) in OUTPUTS.iter().enumerate() {
+            ui.push_id(row, |ui| {
+                ui.horizontal(|ui| {
+                    let available = s.row_available(row);
+                    ui.add_enabled_ui(available, |ui| {
+                        ui.add_sized(
+                            [58.0, 22.0],
+                            egui::Checkbox::new(&mut s.outputs[row].enabled, *label),
+                        )
+                    })
+                    .response
+                    .on_disabled_hover_text(if row == 8 {
+                        "SBS is unavailable for RINEX input"
+                    } else {
+                        "Separate navigation outputs require RINEX 2.x; Sep NAV is unavailable"
+                    });
+                    let enabled = s.output_enabled(row);
+                    let width = (ui.available_width() - 36.0).max(0.0);
+                    if ui
+                        .add_enabled(
+                            enabled,
+                            egui::TextEdit::singleline(&mut s.outputs[row].path)
+                                .desired_width(width),
+                        )
+                        .changed()
+                    {
+                        s.outputs[row].edited = true;
+                    }
+                    if ui
+                        .add_enabled(
+                            enabled,
+                            egui::Button::new("...").min_size(egui::vec2(32.0, 22.0)),
+                        )
+                        .clicked()
+                    {
+                        browse = Some((Target::Output(row), s.outputs[row].path.clone()));
+                    }
+                })
+            });
+        }
         if let Some((target, path)) = browse {
-            self.picker = Some(Picker::new(target, &path));
+            let ctx = ui.ctx().clone();
+            match FileDialog::open(target, &path, move || ctx.request_repaint()) {
+                Ok(dialog) => self.file_dialog = Some(dialog),
+                Err(error) => self.controller.error = Some(error),
+            }
         }
     }
 
@@ -139,73 +167,81 @@ impl Conv {
         };
         let mut ok = false;
         let mut cancel = false;
+        let mut open_mask = false;
         egui::Modal::new(egui::Id::new("conversion options")).show(ctx, |ui| {
-            ui.set_width((ctx.content_rect().width() - 48.0).clamp(0.0, 660.0));
+            let width = (ctx.content_rect().width() - 48.0).clamp(0.0, 660.0);
+            ui.set_width(width);
+            ui.set_max_height((ctx.content_rect().height() - 48.0).max(0.0));
             ui.heading("Options");
-            egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 160.0).max(0.0)).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("RINEX Ver");
-                    egui::ComboBox::from_id_salt("rinex version").selected_text(&draft.version).show_ui(ui, |ui| {
-                        for version in VERSIONS { ui.selectable_value(&mut draft.version, version.into(), version); }
-                    });
-                    disabled_check(ui, "Sep NAV", false, "mrtk convert cannot separate RINEX 3 navigation");
-                    ui.label("Station ID");
-                    ui.add_enabled(draft.rinex2_name, egui::TextEdit::singleline(&mut draft.station).desired_width(70.0)).on_disabled_hover_text("Station ID is passed only with RINEX2 Name");
-                    ui.checkbox(&mut draft.rinex2_name, "RINEX2 Name");
+            egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 150.0).max(0.0)).show(ui, |ui| {
+                egui::Grid::new("options header").num_columns(2).show(ui, |ui| {
+                    left_label(ui, "RINEX Ver");
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("rinex version").selected_text(&draft.version).height(COMBO_HEIGHT).show_ui(ui, |ui| {
+                            for version in VERSIONS { ui.selectable_value(&mut draft.version, version.into(), version); }
+                        });
+                        disabled_check(ui, "Sep NAV", false, "mrtk convert cannot separate RINEX 3 navigation");
+                    }); ui.end_row();
+                    left_label(ui, "Station ID");
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(draft.rinex2_name, egui::TextEdit::singleline(&mut draft.station).desired_width(90.0)).on_disabled_hover_text("Station ID is passed only with RINEX2 Name");
+                        ui.checkbox(&mut draft.rinex2_name, "RINEX2 Name");
+                    }); ui.end_row();
                 });
-                ui.group(|ui| {
+                ui.separator();
+                let field_width = ((width - LABEL_WIDTH - 28.0) / 3.0).max(25.0);
+                egui::Grid::new("options fields").num_columns(2).show(ui, |ui| {
+                    left_label(ui, "RunBy/Obsrv/Agency");
                     ui.horizontal(|ui| {
-                        ui.label("RunBy/Obsrv/Agency");
-                        ui.add_enabled(false, egui::TextEdit::singleline(&mut String::new()).desired_width(100.0)).on_disabled_hover_text("mrtk convert has no RunBy argument");
-                        edits(ui, &mut draft.observer);
-                    });
-                    fields(ui, "Comment 1", std::slice::from_mut(&mut draft.comments[0]));
-                    fields(ui, "Comment 2", std::slice::from_mut(&mut draft.comments[1]));
-                    fields(ui, "Marker Name/#/Type", &mut draft.marker);
-                    fields(ui, "Rec #/Type/Vers", &mut draft.receiver);
-                    fields(ui, "Ant #/Type", &mut draft.antenna);
-                    ui.horizontal(|ui| {
-                        disabled_check(ui, "Approx Pos XYZ", false, "Fixed position is unavailable: decoded station position may replace XYZ");
-                        edits(ui, &mut draft.position);
-                    });
-                    fields(ui, "Antenna Delta H/E/N", &mut draft.delta);
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut draft.iono, "Iono Corr"); ui.checkbox(&mut draft.time_corr, "Time Corr"); ui.checkbox(&mut draft.leap_sec, "Leap Sec");
-                        disabled_check(ui, "Phase Shift", false, "mrtk convert has no phase shift argument"); ui.checkbox(&mut draft.half_cycle, "Half Cyc Corr");
-                    });
-                    ui.label("Slash-joined fields cannot contain '/' or empty fields before nonempty fields.");
+                        ui.add_enabled(false, egui::TextEdit::singleline(&mut String::new()).desired_width(field_width)).on_disabled_hover_text("mrtk convert has no RunBy argument");
+                        edits(ui, &mut draft.observer, field_width);
+                    }); ui.end_row();
+                    fields(ui, "Comment 1", std::slice::from_mut(&mut draft.comments[0]), 3.0 * field_width + 8.0);
+                    fields(ui, "Comment 2", std::slice::from_mut(&mut draft.comments[1]), 3.0 * field_width + 8.0);
+                    fields(ui, "Marker Name/#/Type", &mut draft.marker, field_width);
+                    fields(ui, "Rec #/Type/Vers", &mut draft.receiver, field_width);
+                    fields(ui, "Ant #/Type", &mut draft.antenna, field_width);
+                    ui.add_enabled(false, egui::Checkbox::new(&mut false, "Approx Pos XYZ")).on_disabled_hover_text("Fixed position is unavailable: decoded station position may replace XYZ");
+                    ui.horizontal(|ui| edits(ui, &mut draft.position, field_width)); ui.end_row();
+                    fields(ui, "Antenna Delta H/E/N", &mut draft.delta, field_width);
                 });
                 ui.horizontal(|ui| {
-                    ui.group(|ui| {
-                        ui.label("Observation Types");
-                        ui.horizontal(|ui| { for label in ["C", "L", "D", "S"] { disabled_check(ui, label, true, "All four observation types are always on in mrtk convert"); } });
-                    });
-                    ui.group(|ui| {
-                        ui.label("Frequencies");
-                        egui::ComboBox::from_id_salt("frequencies").selected_text(draft.frequencies.to_string()).show_ui(ui, |ui| {
-                            for count in 1..=5 { ui.selectable_value(&mut draft.frequencies, count, count.to_string()); }
-                        }).response.on_hover_text(FREQUENCY_HELP);
-                        ui.add_enabled(false, egui::Button::new("Mask...")).on_disabled_hover_text("later slice");
-                    });
+                    ui.checkbox(&mut draft.iono, "Iono Corr"); ui.checkbox(&mut draft.time_corr, "Time Corr"); ui.checkbox(&mut draft.leap_sec, "Leap Sec");
+                    disabled_check(ui, "Phase Shift", false, "mrtk convert has no phase shift argument"); ui.checkbox(&mut draft.half_cycle, "Half Cyc Corr");
+                });
+                ui.label("Slash-joined fields cannot contain '/' or empty fields before nonempty fields.");
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Observation Types");
+                    for label in ["C", "L", "D", "S"] { disabled_check(ui, label, true, "All four observation types are always on in mrtk convert"); }
+                    ui.label("Frequencies");
+                    egui::ComboBox::from_id_salt("frequencies").selected_text(draft.frequencies.to_string()).height(COMBO_HEIGHT).show_ui(ui, |ui| {
+                        for count in 1..=5 { ui.selectable_value(&mut draft.frequencies, count, count.to_string()); }
+                    }).response.on_hover_text(FREQUENCY_HELP);
+                    open_mask = ui.button("Mask...").clicked();
                 });
                 ui.group(|ui| {
                     ui.label("Satellite Systems");
-                    ui.horizontal_wrapped(|ui| {
-                        for (checked, (label, _)) in draft.systems.iter_mut().zip(SYSTEMS) { ui.checkbox(checked, label); }
-                    });
+                    ui.horizontal_wrapped(|ui| { for (checked, (label, _)) in draft.systems.iter_mut().zip(SYSTEMS) { ui.checkbox(checked, label); } });
                 });
-                fields(ui, "Excluded Satellites", std::slice::from_mut(&mut draft.excluded));
-                fields(ui, "Receiver Options", std::slice::from_mut(&mut draft.receiver_options));
-                ui.horizontal(|ui| {
-                    ui.label("Time Tolerance (s)"); ui.add(egui::TextEdit::singleline(&mut draft.tolerance).desired_width(75.0));
-                    ui.add_enabled(false, egui::Button::new("Debug: OFF")).on_disabled_hover_text("mrtk convert writes no trace file");
-                    ui.add_enabled(false, egui::Button::new("FCN...")).on_disabled_hover_text("mrtk convert has no FCN argument");
+                egui::Grid::new("options decoder fields").num_columns(2).show(ui, |ui| {
+                    fields(ui, "Excluded Satellites", std::slice::from_mut(&mut draft.excluded), 3.0 * field_width + 8.0);
+                    fields(ui, "Receiver Options", std::slice::from_mut(&mut draft.receiver_options), 3.0 * field_width + 8.0);
+                    left_label(ui, "Time Tolerance (s)");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::TextEdit::singleline(&mut draft.tolerance).desired_width(75.0));
+                        ui.add_enabled(false, egui::Button::new("Debug: OFF")).on_disabled_hover_text("mrtk convert writes no trace file");
+                        ui.add_enabled(false, egui::Button::new("FCN...")).on_disabled_hover_text("mrtk convert has no FCN argument");
+                    }); ui.end_row();
                 });
             });
             if let Some(error) = &self.options_error { ui.colored_label(egui::Color32::DARK_RED, mrtklib_egui_supervisor::mask::mask(error, &[])); }
             ui.horizontal(|ui| { ok = ui.button("OK").clicked(); cancel = ui.button("Cancel").clicked(); });
         });
-        if ok {
+        if open_mask {
+            self.mask = Some(draft.signal_mask.clone());
+            self.mask_error = None;
+        } else if ok {
             match draft.validate() {
                 Ok(()) => {
                     self.controller.settings.options = draft.clone();
@@ -218,6 +254,61 @@ impl Conv {
         } else if cancel {
             self.options = None;
             self.options_error = None;
+        }
+    }
+
+    fn mask_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mask) = &mut self.mask else {
+            return;
+        };
+        let mut ok = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("signal mask")).show(ctx, |ui| {
+            ui.set_width((ctx.content_rect().width() - 48.0).clamp(0.0, 660.0));
+            ui.set_max_height((ctx.content_rect().height() - 48.0).max(0.0));
+            ui.heading("Signal Mask");
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 180.0).max(0.0))
+                .show(ui, |ui| {
+                    for (values, group) in mask.0.iter_mut().zip(&GROUPS) {
+                        ui.group(|ui| {
+                            ui.label(group.name);
+                            ui.horizontal_wrapped(|ui| {
+                                for (checked, code) in values.iter_mut().zip(group.codes) {
+                                    ui.checkbox(checked, *code);
+                                }
+                            });
+                        });
+                    }
+                });
+            if let Some(error) = &self.mask_error {
+                ui.colored_label(egui::Color32::DARK_RED, error);
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Set All").clicked() {
+                    mask.set_all(true);
+                }
+                if ui.button("Unset All").clicked() {
+                    mask.set_all(false);
+                }
+                ok = ui.button("OK").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if ok {
+            match mask.allow_list() {
+                Ok(_) => {
+                    if let Some(options) = &mut self.options {
+                        options.signal_mask = mask.clone();
+                    }
+                    self.mask = None;
+                    self.mask_error = None;
+                }
+                Err(error) => self.mask_error = Some(error),
+            }
+        } else if cancel {
+            self.mask = None;
+            self.mask_error = None;
         }
     }
 
@@ -279,39 +370,49 @@ impl Conv {
             }
             return;
         }
-        if let Some(picker) = &mut self.picker {
-            let (selected, closed) = picker.show(ctx);
-            if let Some(path) = selected {
-                let value = path.to_str().expect("picker checks UTF-8").to_owned();
-                let s = &mut self.controller.settings;
-                match picker.target {
-                    Target::Input => {
-                        if s.input != value {
-                            s.input = value;
-                            self.controller.refresh_outputs(true);
+        if self.mask.is_some() {
+            self.mask_dialog(ctx);
+        } else {
+            self.options_dialog(ctx);
+        }
+    }
+
+    pub fn update_logic(&mut self, ctx: &egui::Context) {
+        if let Some(dialog) = &self.file_dialog {
+            match dialog.poll() {
+                Ok(None) => {}
+                result => {
+                    self.file_dialog = None;
+                    match result {
+                        Ok(Some(selection)) => {
+                            if let Some(path) = selection.path {
+                                match crate::file_dialog::selected_text(&path) {
+                                    Ok(value) => match selection.target {
+                                        Target::Input => {
+                                            if self.controller.settings.input != value {
+                                                self.controller.settings.input = value;
+                                                self.controller.refresh_outputs(true);
+                                            }
+                                        }
+                                        Target::Directory => {
+                                            self.controller.settings.directory = value;
+                                            self.controller.refresh_outputs(false);
+                                        }
+                                        Target::Output(row) => {
+                                            self.controller.settings.outputs[row].path = value;
+                                            self.controller.settings.outputs[row].edited = true;
+                                        }
+                                    },
+                                    Err(error) => self.controller.error = Some(error),
+                                }
+                            }
                         }
-                    }
-                    Target::Directory => {
-                        s.directory = value;
-                        self.controller.refresh_outputs(false);
-                    }
-                    Target::Output(row) => {
-                        s.outputs[row].path = value;
-                        s.outputs[row].edited = true;
+                        Err(error) => self.controller.error = Some(error),
+                        Ok(None) => unreachable!(),
                     }
                 }
             }
-            if closed {
-                self.picker = None;
-            }
-            return;
         }
-        self.options_dialog(ctx);
-    }
-}
-
-impl eframe::App for Conv {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.controller.tick();
         if ctx.input(|input| input.viewport().close_requested()) {
             self.controller.request_close();
@@ -323,11 +424,13 @@ impl eframe::App for Conv {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let locked = self.controller.busy()
             || self.controller.closing
-            || self.controller.overwrite.is_some();
+            || self.controller.overwrite.is_some()
+            || self.file_dialog.is_some();
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("main form")
@@ -389,6 +492,15 @@ impl eframe::App for Conv {
         });
         self.dialogs(&ctx);
     }
+}
+
+impl eframe::App for Conv {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.update_logic(ctx);
+    }
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw(ui);
+    }
     fn on_exit(&mut self) {
         self.controller.save();
     }
@@ -409,24 +521,36 @@ fn time(ui: &mut egui::Ui, label: &str, field: &mut TimeField) {
                         .hint_text("H:M:S")
                         .desired_width(85.0),
                 );
-            });
+            })
         });
     });
 }
-fn edits(ui: &mut egui::Ui, values: &mut [String]) {
-    let width =
-        ((ui.available_width() - (values.len() - 1) as f32 * 4.0) / values.len() as f32).max(30.0);
+fn left_label(ui: &mut egui::Ui, label: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(LABEL_WIDTH, 20.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(LABEL_WIDTH);
+            ui.label(label);
+        },
+    );
+}
+
+fn edits(ui: &mut egui::Ui, values: &mut [String], width: f32) {
     for value in values {
         ui.add(egui::TextEdit::singleline(value).desired_width(width));
     }
 }
-fn fields(ui: &mut egui::Ui, label: &str, values: &mut [String]) {
-    ui.horizontal(|ui| {
-        ui.add_sized([145.0, 18.0], egui::Label::new(label));
-        edits(ui, values);
-    });
+fn fields(ui: &mut egui::Ui, label: &str, values: &mut [String], width: f32) {
+    left_label(ui, label);
+    ui.horizontal(|ui| edits(ui, values, width));
+    ui.end_row();
 }
 fn disabled_check(ui: &mut egui::Ui, label: &str, mut value: bool, reason: &str) {
     ui.add_enabled(false, egui::Checkbox::new(&mut value, label))
         .on_disabled_hover_text(reason);
 }
+
+#[cfg(test)]
+#[path = "ui_tests.rs"]
+mod tests;

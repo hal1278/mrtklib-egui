@@ -75,6 +75,9 @@ pub(crate) fn build(
     pair("-v", &o.version);
     pair("-f", &o.frequencies.to_string());
     pair("-tt", &o.tolerance);
+    if let Some(mask) = o.signal_mask.allow_list()? {
+        pair("-mask", &mask);
+    }
     if o.rinex2_name {
         pair("-c", &o.station);
     }
@@ -213,6 +216,21 @@ mod tests {
             s.outputs[row].enabled = false;
             assert_eq!(values(&argv(&s), flag), [""]);
         }
+    }
+
+    #[test]
+    fn signal_mask_is_omitted_by_default_or_passed_once_as_one_allow_list() {
+        let mut s = fixture();
+        assert!(values(&argv(&s), "-mask").is_empty());
+        s.options.signal_mask.set_all(false);
+        assert!(
+            build(&s, Path::new("mrtk"), &std::env::temp_dir())
+                .unwrap_err()
+                .contains("at least one")
+        );
+        s.options.signal_mask.0[0][0] = true;
+        s.options.signal_mask.0[2][16] = true;
+        assert_eq!(values(&argv(&s), "-mask"), ["GL1C,EL8L"]);
     }
 
     #[test]

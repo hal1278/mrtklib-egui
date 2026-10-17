@@ -80,6 +80,15 @@ Test code that uses the RPC against the mock server. If a tool is unavailable, s
 
 In addition to mock coverage, tests needing the real `mrtk` are opt-in: set `MRTKLIB_EGUI_TEST_MRTK` and `MRTKLIB_EGUI_TEST_MRTKLIB_DIR`, then run `cargo test -p mrtklib-egui-navi -- --ignored real_backend_`.
 
+For UI changes, optionally render conv's headless screenshots with a GPU adapter and the application font/style setup:
+
+```sh
+MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
+  cargo test -p mrtklib-egui-conv -- --ignored snapshot_
+```
+
+On NixOS, use the development shell's `LD_LIBRARY_PATH` for the GPU libraries. These tests are ignored by default and prohibit child process launches.
+
 ## Edit scope
 
 Allowed: `Cargo.toml`, `Cargo.lock`, `README.md`, `LICENSE-*`, `flake.nix`, `crates/**`, `src/**`, `xtask/**`, `tests/**`, `docs/**`, `AGENTS.md`, `rumdl.toml`, `.gitignore`, and CI files when working on CI.
