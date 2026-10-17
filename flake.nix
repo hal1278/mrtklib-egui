@@ -19,9 +19,10 @@
         "plot"
       ];
 
-      # winit, glutin and wgpu load these at run time; they are not on the
+      # winit, glutin, wgpu and rfd load these at run time; they are not on the
       # library path of a Nix-built program.
       runtimeLibraries = pkgs: [
+        pkgs.dbus.lib
         pkgs.wayland
         pkgs.libxkbcommon
         pkgs.libGL

@@ -19,7 +19,7 @@ This repository does not reimplement MRTKLIB and does not link to it.
 
 - The backend is the `mrtk` executable, started as a child process.
 - `mrtk run` is controlled only through the RPC. Never use the telnet console.
-- `mrtk post` and `mrtk convert` use argv, files, the machine-readable progress output and cancel through stdin.
+- `mrtk post` and `mrtk convert` target argv, files, machine-readable progress output and cancel through stdin. The Conv first slice is an explicit exception: `convert` has no progress/cancel interface yet, so it displays stderr without parsing and offers no Abort action (see `docs/design.md`).
 - MRTKLIB provides configuration handling (schema, read, write, validate). The GUI does not parse or write MRTKLIB TOML itself.
 - Never parse human-readable MRTKLIB output (console text, stderr progress lines, log messages) to obtain state.
   Showing such text to the user as-is is fine.
@@ -79,6 +79,15 @@ After Markdown changes, run `rumdl check .` (configuration: `rumdl.toml`).
 Test code that uses the RPC against the mock server. If a tool is unavailable, say so in the report.
 
 In addition to mock coverage, tests needing the real `mrtk` are opt-in: set `MRTKLIB_EGUI_TEST_MRTK` and `MRTKLIB_EGUI_TEST_MRTKLIB_DIR`, then run `cargo test -p mrtklib-egui-navi -- --ignored real_backend_`.
+
+For UI changes, optionally render conv's headless screenshots with a GPU adapter and the application font/style setup:
+
+```sh
+MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
+  cargo test -p mrtklib-egui-conv -- --ignored snapshot_
+```
+
+On NixOS, use the development shell's `LD_LIBRARY_PATH` for the GPU libraries. These tests are ignored by default and prohibit child process launches.
 
 ## Edit scope
 
