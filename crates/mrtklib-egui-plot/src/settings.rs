@@ -42,6 +42,8 @@ pub(crate) const ORIGIN_RANGES: [(&str, f64); 23] = [
 #[serde(default)]
 pub(crate) struct Options {
     pub week_time: bool,
+    /// `h:m:s UTC` instead of `h:m:s GPST` when `week_time` is off.
+    pub utc: bool,
     pub auto_fit: bool,
     pub dms: bool,
     pub statistics: bool,
@@ -55,6 +57,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             week_time: false,
+            utc: false,
             auto_fit: true,
             dms: false,
             statistics: false,
@@ -87,6 +90,7 @@ impl Options {
 #[serde(default)]
 pub(crate) struct Settings {
     pub last_file: Option<PathBuf>,
+    pub last_file2: Option<PathBuf>,
     pub plot: usize,
     pub components: [bool; 3],
     pub quality: u8,
@@ -96,6 +100,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             last_file: None,
+            last_file2: None,
             plot: 0,
             components: [true; 3],
             quality: 0,
@@ -165,6 +170,7 @@ mod tests {
         assert_eq!(load(&path).unwrap(), Settings::default());
         let s = Settings {
             last_file: Some("入力.pos".into()),
+            last_file2: Some("比較.pos".into()),
             plot: 2,
             quality: 6,
             options: Options {

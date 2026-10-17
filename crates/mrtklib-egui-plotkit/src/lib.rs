@@ -1,9 +1,11 @@
 //! Display-only solution geometry, quality palette and component statistics.
 
+pub mod leap;
+
 /// Coordinates are metres in ECEF, or metres in ENU for a relative dataset.
 #[derive(Clone, Debug)]
 pub struct SolutionPoint {
-    /// Continuous seconds in the file's own time system since 1980-01-06.
+    /// Continuous GPST seconds since 1980-01-06 (UTC and JST files are converted when read).
     pub time: f64,
     pub position: [f64; 3],
     pub quality: u8,

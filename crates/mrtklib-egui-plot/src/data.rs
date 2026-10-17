@@ -9,6 +9,13 @@ pub(crate) struct Origin {
     epoch: f64,
 }
 impl Origin {
+    pub fn fixed(llh: [f64; 3]) -> Self {
+        Self {
+            position: llh_to_ecef(llh),
+            velocity: [0.0; 3],
+            epoch: 0.0,
+        }
+    }
     pub fn at(&self, time: f64) -> [f64; 3] {
         std::array::from_fn(|i| self.position[i] + self.velocity[i] * (time - self.epoch))
     }
@@ -61,12 +68,15 @@ pub(crate) fn origin(data: &Dataset, options: &Options) -> Result<Origin, String
 }
 #[derive(Clone, Debug)]
 pub(crate) struct Sample {
+    /// 0/1 are input datasets; 2 is their difference (palette 0).
+    pub source: usize,
     pub index: usize,
     pub time: f64,
     pub enu: [f64; 3],
     pub quality: u8,
     pub nsat: [f64; 3],
 }
+#[cfg(test)]
 pub(crate) fn samples(
     data: &Dataset,
     options: &Options,
@@ -77,21 +87,68 @@ pub(crate) fn samples(
     } else {
         Some(origin(data, options)?)
     };
-    Ok(data
-        .points
+    Ok(samples_with_origin(data, origin.as_ref(), quality))
+}
+pub(crate) fn samples_with_origin(
+    data: &Dataset,
+    origin: Option<&Origin>,
+    quality: u8,
+) -> Vec<Sample> {
+    data.points
         .iter()
         .enumerate()
         .filter(|(_, p)| quality == 0 || p.quality == quality)
         .map(|(index, p)| Sample {
+            source: 0,
             index,
             time: p.time,
-            enu: origin
-                .as_ref()
-                .map_or(p.position, |o| ecef_to_enu(p.position, o.at(p.time))),
+            enu: if data.relative {
+                p.position
+            } else {
+                origin.map_or(p.position, |o| ecef_to_enu(p.position, o.at(p.time)))
+            },
             quality: p.quality,
             nsat: [f64::from(p.satellites), p.age, p.ratio],
         })
-        .collect())
+        .collect()
+}
+/// RTKPLOT TIMEPOS::diff: ordered, one-to-one matches within default TTOL.
+pub(crate) fn difference(a: &[Sample], b: &[Sample], quality: u8) -> Vec<Sample> {
+    const TTOL: f64 = 0.025;
+    let (mut i, mut j) = (0, 0);
+    let mut result = Vec::new();
+    while i < a.len() && j < b.len() {
+        let dt = a[i].time - b[j].time;
+        if dt < -TTOL {
+            i += 1;
+        } else if dt > TTOL {
+            j += 1;
+        } else {
+            let q = a[i].quality.max(b[j].quality);
+            if quality == 0 || quality == q {
+                result.push(Sample {
+                    source: 2,
+                    enu: std::array::from_fn(|k| a[i].enu[k] - b[j].enu[k]),
+                    quality: q,
+                    ..a[i].clone()
+                });
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+    result
+}
+/// Convert RTKPLOT's literal BGR TColor palette to RGB.
+pub(crate) fn mark_color(source: usize, quality: u8) -> [u8; 3] {
+    if source != 1 {
+        return mrtklib_egui_plotkit::solution_style(quality).1;
+    }
+    const COLORS: [u32; 8] = [
+        0xC0C0C0, 0x804000, 0x008080, 0xFF0080, 0xFF8000, 0x8080FF, 0xFF8080, 0x808080,
+    ];
+    let c = COLORS[usize::from(quality.min(7))];
+    [c as u8, (c >> 8) as u8, (c >> 16) as u8]
 }
 /// Index ranges preserve file order and quality-filtered adjacency.
 pub(crate) fn segments(samples: &[Sample], time_series: bool) -> Vec<std::ops::Range<usize>> {
@@ -113,6 +170,53 @@ pub(crate) fn segments(samples: &[Sample], time_series: bool) -> Vec<std::ops::R
 mod tests {
     use super::*;
     use mrtklib_egui_plotkit::SolutionPoint;
+    #[test]
+    fn difference_matches_once_without_interpolation_and_filters_the_larger_q() {
+        let mut a = samples(&dataset(), &Options::default(), 0).unwrap();
+        let mut b = a.clone();
+        a[0].quality = 1;
+        b[0].quality = 5;
+        b[0].time += 0.024;
+        b[0].enu[0] -= 3.0;
+        b[1].time += 0.026;
+        b[2].quality = 1;
+        b[2].enu[2] += 2.0;
+        let d = difference(&a, &b, 0);
+        assert_eq!(d.len(), 2);
+        assert_eq!((d[0].index, d[0].time, d[0].quality), (0, a[0].time, 5));
+        assert_eq!(d[0].enu, [3.0, 0.0, 0.0]);
+        assert_eq!(d[1].quality, 3);
+        assert_eq!(d[1].enu, [0.0, 0.0, -2.0]);
+        assert_eq!(difference(&a, &b, 5).len(), 1);
+        assert!(difference(&a, &b, 1).is_empty());
+        // Duplicate timestamps are consumed one-to-one, in file order.
+        a[1].time = a[0].time;
+        b[1].time = b[0].time;
+        assert_eq!(difference(&a, &b[..1], 0).len(), 1);
+        assert_eq!(difference(&a, &b, 0).len(), 3);
+        assert!(difference(&[], &b, 0).is_empty());
+    }
+    #[test]
+    fn rtkplot_second_palette_uses_bgr_literals_and_difference_uses_first() {
+        let expected = [
+            [192, 192, 192],
+            [0, 64, 128],
+            [128, 128, 0],
+            [128, 0, 255],
+            [0, 128, 255],
+            [255, 128, 128],
+            [128, 128, 255],
+            [128, 128, 128],
+        ];
+        for (q, rgb) in expected.into_iter().enumerate() {
+            assert_eq!(mark_color(1, q as u8), rgb);
+            assert_eq!(
+                mark_color(0, q as u8),
+                mrtklib_egui_plotkit::solution_style(q as u8).1
+            );
+            assert_eq!(mark_color(2, q as u8), mark_color(0, q as u8));
+        }
+    }
     fn dataset() -> Dataset {
         Dataset {
             points: (0..3)

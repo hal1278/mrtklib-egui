@@ -1,4 +1,4 @@
-//! RTKPLOT-like viewer for one MRTKLIB text solution file.
+//! RTKPLOT-like viewer for two MRTKLIB text solution files.
 mod controller;
 mod data;
 mod grid;

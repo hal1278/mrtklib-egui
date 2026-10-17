@@ -1,4 +1,5 @@
 //! Strict reader for the MRTKLIB text solution schema (not console output).
+use mrtklib_egui_plotkit::leap::utc_to_gpst;
 use mrtklib_egui_plotkit::{SolutionPoint, llh_to_ecef};
 use std::{io::BufRead, path::Path};
 
@@ -160,6 +161,13 @@ impl Layout {
             }
             f64::from(week) * 604800.0 + tow
         };
+        // MRTKLIB shifts UTC/JST before formatting both calendar and week/TOW
+        // (`src/pos/mrtk_sol.c:1797-1813`), so undo the shift for both.
+        let time = match self.time_system.as_str() {
+            "UTC" => utc_to_gpst(time),
+            "JST" => utc_to_gpst(time - 9.0 * 3600.0),
+            _ => time,
+        };
         let position = self.position(&f[2..], false)?;
         let q = if dms { 9 } else { 5 };
         let quality: u8 = f[q].parse().ok()?;
@@ -249,7 +257,13 @@ fn parse_with_time_layout(
                     return Err("Multiple solution headings are not supported in one file".into());
                 }
                 dataset.relative = detected.coordinates == Coordinates::Enu;
-                dataset.time_system = detected.time_system.clone();
+                if detected.time_system != "GPST" {
+                    dataset.warnings.push(format!(
+                        "Times converted from {} to GPST with the built-in leap-second table",
+                        detected.time_system
+                    ));
+                }
+                dataset.time_system = "GPST".into();
                 layout = Some(detected);
             }
             continue;
@@ -349,7 +363,8 @@ mod tests {
             for calendar in [true, false] {
                 for crlf in [true, false] {
                     let d = fixture(LLH, "35.0 139.0 40.0", system, calendar, crlf);
-                    assert_eq!(d.time_system, system);
+                    assert_eq!(d.time_system, "GPST");
+                    assert_eq!(d.warnings.is_empty(), system == "GPST");
                     assert_eq!(d.malformed, 0);
                     assert_eq!(d.points.len(), 1);
                     let p = &d.points[0];
@@ -357,10 +372,14 @@ mod tests {
                     assert_eq!(p.satellites, 15);
                     assert_eq!(p.age, 2.5);
                     assert_eq!(p.ratio, 8.0);
-                    assert_eq!(
-                        p.time,
-                        crate::time::calendar("2024/08/22", "11:00:00").unwrap()
-                    );
+                    // 2024: GPST - UTC = 18 s; JST = UTC + 9 h.
+                    let written = crate::time::calendar("2024/08/22", "11:00:00").unwrap();
+                    let expected = match system {
+                        "UTC" => written + 18.0,
+                        "JST" => written - 9.0 * 3600.0 + 18.0,
+                        _ => written,
+                    };
+                    assert_eq!(p.time, expected, "{system}");
                 }
             }
         }

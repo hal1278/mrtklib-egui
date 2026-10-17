@@ -30,7 +30,7 @@ This repository does not reimplement MRTKLIB and does not link to it.
 
 - a positioning engine or GNSS algorithms
 - reading or writing of GNSS data formats (receiver raw data, RTCM, RINEX, correction data, products and any other format MRTKLIB handles), except MRTKLIB solution files for plotting
-- a GNSS time or ephemeris computation engine
+- a GNSS time or ephemeris computation engine (exception: GPST/UTC conversion with a built-in leap-second table for displaying solutions, see `docs/design.md`)
 - parsing or validation of MRTKLIB configuration options
 
 Allowed, and part of the GUI's job:
