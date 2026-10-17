@@ -812,6 +812,9 @@ impl PlotApp {
             items.push((true, e.clone()));
         }
         for slot in 0..2 {
+            if let Some(error) = &self.controller.conversion_errors[slot] {
+                items.push((true, format!("[{}] {error}", slot + 1)));
+            }
             for e in &self.controller.file_errors[slot] {
                 items.push((true, format!("[{}] {e}", slot + 1)));
             }

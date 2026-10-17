@@ -141,14 +141,15 @@ pub(crate) fn samples_with_origin(
 }
 /// RTKPLOT TIMEPOS::diff: ordered, one-to-one matches within default TTOL.
 pub(crate) fn difference(a: &[Sample], b: &[Sample], quality: u8) -> Vec<Sample> {
-    const TTOL: f64 = 0.025;
+    const TTOL_NS: i128 = 25_000_000;
     let (mut i, mut j) = (0, 0);
     let mut result = Vec::new();
     while i < a.len() && j < b.len() {
-        let dt = a[i].time - b[j].time;
-        if dt < -TTOL {
+        // Preserve the inclusive boundary without subtracting large f64 epochs.
+        let dt = a[i].time_ns - b[j].time_ns;
+        if dt < -TTOL_NS {
             i += 1;
-        } else if dt > TTOL {
+        } else if dt > TTOL_NS {
             j += 1;
         } else {
             let q = a[i].quality.max(b[j].quality);
@@ -230,8 +231,10 @@ mod tests {
         a[0].quality = 1;
         b[0].quality = 5;
         b[0].time += 0.024;
+        b[0].time_ns += 24_000_000;
         b[0].enu[0] -= 3.0;
         b[1].time += 0.026;
+        b[1].time_ns += 26_000_000;
         b[2].quality = 1;
         b[2].enu[2] += 2.0;
         let d = difference(&a, &b, 0);
@@ -244,10 +247,42 @@ mod tests {
         assert!(difference(&a, &b, 1).is_empty());
         // Duplicate timestamps are consumed one-to-one, in file order.
         a[1].time = a[0].time;
+        a[1].time_ns = a[0].time_ns;
         b[1].time = b[0].time;
+        b[1].time_ns = b[0].time_ns;
         assert_eq!(difference(&a, &b[..1], 0).len(), 1);
         assert_eq!(difference(&a, &b, 0).len(), 3);
         assert!(difference(&[], &b, 0).is_empty());
+    }
+    #[test]
+    fn difference_accepts_the_inclusive_25_ms_boundary_at_recent_gpst_epochs() {
+        let a = samples(&crate::reader::synthetic(), &Options::default(), 0).unwrap();
+        let a = &a[..1];
+        for sign in [-1, 1] {
+            for offset_ns in [25_000_000, 25_000_001, 25_001_000] {
+                let mut b = a.to_vec();
+                b[0].time += f64::from(sign) * offset_ns as f64 / 1e9;
+                b[0].time_ns += i128::from(sign) * offset_ns;
+                if offset_ns == 25_000_000 {
+                    assert!(
+                        (a[0].time - b[0].time).abs() > 0.025,
+                        "fixture must reproduce the f64 boundary error"
+                    );
+                }
+                let result = difference(a, &b, 0);
+                assert_eq!(
+                    result.len(),
+                    usize::from(offset_ns == 25_000_000),
+                    "offset {sign} * {offset_ns} ns"
+                );
+                if let Some(s) = result.first() {
+                    assert_eq!(
+                        (s.time, s.time_ns, s.index),
+                        (a[0].time, a[0].time_ns, a[0].index)
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn rtkplot_second_palette_uses_bgr_literals_and_difference_uses_first() {

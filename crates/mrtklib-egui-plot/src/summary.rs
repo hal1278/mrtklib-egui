@@ -160,6 +160,37 @@ mod tests {
         assert_eq!(percentage(1, 0), None);
     }
     #[test]
+    fn summary_converts_gpst_before_formatting_times_and_comparing_dates() {
+        let mut d = crate::reader::synthetic();
+        d.points.truncate(2);
+        for (p, clock) in d.points.iter_mut().zip(["00:00:05", "00:00:25"]) {
+            p.time = time::calendar("2024/08/22", clock).unwrap();
+            p.time_ns = p.time as i128 * 1_000_000_000;
+        }
+        let samples = crate::data::samples_with_origin(&d, None, 0);
+        for (utc, week_time, expected) in [
+            (false, false, "2024/08/22 00:00:05.000 - 00:00:25.000 GPST"),
+            (
+                true,
+                false,
+                "2024/08/21 23:59:47.000 - 2024/08/22 00:00:07.000 UTC",
+            ),
+            (true, true, "2328/345605.000 - 2328/345625.000 GPST"),
+        ] {
+            let options = Options {
+                utc,
+                week_time,
+                ..Default::default()
+            };
+            let text = line("1", &samples, &d, &options, false);
+            assert!(text.starts_with(&format!("[1] {expected}  N=2")), "{text}");
+        }
+        assert_eq!(
+            samples[0].time, d.points[0].time,
+            "summary must not mutate the stored GPST times"
+        );
+    }
+    #[test]
     fn path_ellipsis_preserves_unicode_and_entire_filename() {
         let measure = |s: &str| s.chars().count() as f32;
         assert_eq!(

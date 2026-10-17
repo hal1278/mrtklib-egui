@@ -853,3 +853,118 @@ fn snapshot_position_height() {
     h.run();
     save(&mut h, "snapshot_plot_position_height");
 }
+
+#[test]
+fn status_times_match_the_plot_for_each_time_option_and_dataset() {
+    for (utc, week_time, first, epoch, second) in [
+        (
+            false,
+            false,
+            "2024/08/22 11:00:00.000 GPST",
+            "2024/08/22 11:00:05.000 GPST",
+            "2024/08/22 11:00:00.010",
+        ),
+        (
+            true,
+            false,
+            "2024/08/22 10:59:42.000 UTC",
+            "2024/08/22 10:59:47.000 UTC",
+            "2024/08/22 10:59:42.010",
+        ),
+        (
+            true,
+            true,
+            "2328/385200.000 GPST",
+            "2328/385205.000 GPST",
+            "2328/385200.010",
+        ),
+    ] {
+        let mut c = two_solutions(1);
+        c.selection.data = [true; 2];
+        c.apply_options(Options {
+            utc,
+            week_time,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut h = harness_with_controller(c);
+        let (first_time, system) = first.rsplit_once(' ').unwrap();
+        let summary = h.state().summary();
+        assert!(
+            summary.starts_with(&format!("[1] {first_time} - ")),
+            "{summary}"
+        );
+        assert!(summary.lines().all(|line| line.contains(system)));
+        assert!(
+            summary
+                .lines()
+                .nth(1)
+                .unwrap()
+                .starts_with(&format!("[2] {second} - "))
+        );
+        let plot_time = h.state().controller.samples[0].time;
+        assert_eq!(
+            format!("{} {system}", time::format(plot_time, week_time, true)),
+            first
+        );
+        hover_epoch(&mut h, 0);
+        assert!(
+            h.state()
+                .epoch_text()
+                .starts_with(&format!("[1] {epoch}  "))
+        );
+        hover_epoch(&mut h, 1);
+        assert!(h.state().epoch_text().starts_with(&format!(
+            "[2] {} ",
+            time::format(plot_time + 5.01, week_time, true)
+        )));
+        // Plot coordinates already use display time; cursor text must not convert again.
+        h.state_mut().hovered = None;
+        h.state_mut().cursor = Some((1, [plot_time, 0.125]));
+        assert_eq!(h.state().epoch_text(), format!("{first}  N=0.1250 m"));
+        h.get_by_label("1-2").click();
+        h.run();
+        assert!(
+            h.state()
+                .summary()
+                .starts_with(&format!("[1-2] {first_time} - "))
+        );
+        h.get_by_label("Fit Vertical").click();
+        h.run();
+        hover_epoch(&mut h, 2);
+        assert!(
+            h.state()
+                .epoch_text()
+                .starts_with(&format!("[1-2] {epoch}  "))
+        );
+    }
+}
+
+#[test]
+fn hidden_dataset_origin_error_is_reported_without_removing_the_visible_dataset() {
+    let mut c = two_solutions(0);
+    c.dataset.as_mut().unwrap().relative = true;
+    for (i, point) in c.dataset.as_mut().unwrap().points.iter_mut().enumerate() {
+        point.position = [i as f64 * 0.02, 1.0, 0.0];
+    }
+    c.rebuild();
+    let mut h = harness_with_controller(c);
+    assert_eq!(
+        h.state().controller.samples.len(),
+        h.state().controller.dataset.as_ref().unwrap().points.len()
+    );
+    let items = h.state().info_items();
+    assert_eq!(items.len(), 1);
+    assert!(items[0].0);
+    assert!(items[0].1.starts_with("[2]"));
+    assert!(items[0].1.contains("absolute Solution-1"));
+    h.get_by_label("⚠ 1").click();
+    h.run();
+    assert!(h.state().info_open);
+    h.state_mut().info_open = false;
+    // NSat needs no coordinate origin, so the conversion error resolves.
+    select(&mut h, "Gnd Trk", "NSat");
+    assert!(h.state().info_items().is_empty());
+    assert!(h.query_by_label("⚠ 1").is_none());
+    assert!(!h.state().controller.samples.is_empty());
+}
