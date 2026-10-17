@@ -23,6 +23,8 @@ pub(crate) struct Controller {
     settings_path: Result<PathBuf, String>,
     settings_readable: bool,
     pending: Option<Receiver<Loaded>>,
+    /// Clear during a load keeps the worker owned (one reader at a time) and drops its result.
+    discard_pending: bool,
     notify: Arc<dyn Fn() + Send + Sync>,
 }
 impl Controller {
@@ -54,6 +56,7 @@ impl Controller {
             settings_path: path,
             settings_readable: readable,
             pending: None,
+            discard_pending: false,
             notify: Arc::new(notify),
         };
         if let Some(path) = controller.settings.last_file.clone() {
@@ -80,6 +83,7 @@ impl Controller {
             Ok(_) => {
                 self.pending = Some(receiver);
                 self.loading = true;
+                self.discard_pending = false;
             }
             Err(e) => self.error = Some(format!("cannot start solution reader: {e}")),
         }
@@ -94,12 +98,17 @@ impl Controller {
             Err(TryRecvError::Disconnected) => {
                 self.pending = None;
                 self.loading = false;
-                self.error = Some("solution reader ended without a result".into());
+                if !std::mem::take(&mut self.discard_pending) {
+                    self.error = Some("solution reader ended without a result".into());
+                }
                 return;
             }
         };
         self.pending = None;
         self.loading = false;
+        if std::mem::take(&mut self.discard_pending) {
+            return;
+        }
         match result {
             (path, Ok(dataset)) => {
                 self.dataset = Some(dataset);
@@ -133,8 +142,9 @@ impl Controller {
         Ok(())
     }
     pub fn clear(&mut self) {
-        self.pending = None;
-        self.loading = false;
+        // A running reader stays owned until it finishes, so Open stays refused and
+        // Open/Clear cannot start unbounded readers; its result is dropped in poll.
+        self.discard_pending = self.loading;
         self.dataset = None;
         self.samples.clear();
         self.settings.last_file = None;
@@ -167,6 +177,7 @@ impl Controller {
             settings_path: Err("test settings are not saved".into()),
             settings_readable: false,
             pending: None,
+            discard_pending: false,
             notify: Arc::new(|| {}),
         };
         c.rebuild();
@@ -210,5 +221,38 @@ mod tests {
         assert!(c.settings.last_file.is_none());
         assert!(c.error.is_none());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn clear_during_load_keeps_one_reader_and_drops_its_result() {
+        let (release, gate) = mpsc::channel::<()>();
+        let (notify, wake) = mpsc::channel();
+        let mut c = Controller::fixture(reader::synthetic());
+        c.notify = Arc::new(move || notify.send(()).unwrap());
+        // A reader that has not finished: install the pending channel directly.
+        let (sender, receiver) = mpsc::channel();
+        c.pending = Some(receiver);
+        c.loading = true;
+        let worker = std::thread::spawn(move || {
+            gate.recv().unwrap();
+            sender
+                .send((PathBuf::from("late.pos"), Ok(reader::synthetic())))
+                .unwrap();
+        });
+        c.clear();
+        assert!(c.loading, "the running reader stays owned after Clear");
+        assert!(c.dataset.is_none());
+        c.open(PathBuf::from("other.pos"));
+        assert!(c.error.as_ref().unwrap().contains("already loading"));
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        c.poll();
+        assert!(!c.loading);
+        assert!(
+            c.dataset.is_none(),
+            "a cleared load must not repopulate the plot"
+        );
+        assert!(c.settings.last_file.is_none());
+        drop(wake);
     }
 }
