@@ -1,6 +1,8 @@
 //! Parts shared by the mrtklib-egui applications: window setup, fonts and the classic style.
 
+pub mod file_dialog;
 mod font;
+pub mod logging;
 pub mod paths;
 
 use eframe::egui::{self, Color32, FontId, TextStyle};

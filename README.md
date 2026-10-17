@@ -10,7 +10,10 @@ The steps below build the applications from source on Linux, for developers. The
 |---|---|
 | `mrtklib-egui-navi` | Starts and stops `mrtk run` and shows its solution. Settings cannot be edited in the GUI yet. |
 | `mrtklib-egui-conv` | RTKCONV-like conversion window: input/output paths, conversion options, command preview, overwrite confirmation, stderr and exit status, and JSON GUI settings. Abort is unavailable until MRTKLIB has a progress/cancel interface. |
-| `mrtklib-egui-post`, `-plot` | Empty windows. |
+| `mrtklib-egui-plot` | RTKPLOT-like solution viewer: Gnd Trk, Position and NSat, quality filters, origins, epoch inspection, statistics and JSON GUI settings. Reads one MRTKLIB whitespace text solution file (LLH/XYZ/ENU). |
+| `mrtklib-egui-post` | Empty window. |
+
+Plot runs without `mrtk`: build/run `mrtklib-egui-plot`, then use File → Open Solution-1 or drop a solution file onto its window. GUI settings use the same settings-directory override described below.
 
 Windows is not supported yet: `mrtk run` needs the MRTKLIB Windows port first.
 

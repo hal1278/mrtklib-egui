@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+mrtklib-egui-plotkit.workspace = true
 eframe.workspace = true
 mrtklib-egui-common.workspace = true
 mrtklib-egui-rpc = { path = "../mrtklib-egui-rpc" }
