@@ -474,6 +474,16 @@ impl PlotApp {
                 .enumerate()
             {
                 let q = i + 1;
+                // Only qualities present in the shown data get a button.
+                if !self
+                    .controller
+                    .samples
+                    .iter()
+                    .any(|s| usize::from(s.quality) == q)
+                    && !self.present_quality(q)
+                {
+                    continue;
+                }
                 let visible = self.controller.settings.qualities.0[q];
                 let [r, g, b] = QUALITY_COLORS[q];
                 let color = if visible {
@@ -744,6 +754,14 @@ impl PlotApp {
     #[cfg(test)]
     fn epoch_text(&self) -> String {
         self.cursor_status(self.hovered).0
+    }
+    /// A quality occurs in a shown dataset (hidden qualities included, so their buttons stay).
+    fn present_quality(&self, q: usize) -> bool {
+        let sel = self.controller.selection;
+        (0..2)
+            .filter(|&slot| sel.difference || sel.data[slot])
+            .filter_map(|slot| self.controller.dataset_at(slot))
+            .any(|d| d.points.iter().any(|p| usize::from(p.quality) == q))
     }
     fn cursor_status(&self, epoch: Option<(usize, usize)>) -> (String, bool) {
         let o = &self.controller.settings.options;
@@ -1253,7 +1271,12 @@ impl PlotApp {
                 ));
                 let (cursor_text, _) = self.cursor_status(self.hovered);
                 // Preserve the width decision while the pointer moves to the status button.
-                let both_shown = self.cursor_status(self.hovered.or(self.selected)).1;
+                // Decide on a representative epoch so the button does not depend on hovering.
+                let representative = self
+                    .hovered
+                    .or(self.selected)
+                    .or_else(|| self.controller.samples.first().map(|s| (s.source, s.index)));
+                let both_shown = self.cursor_status(representative).1;
                 ui.allocate_ui_with_layout(
                     egui::vec2(self.status_width, 0.0),
                     egui::Layout::top_down(egui::Align::Min),
