@@ -51,7 +51,7 @@ impl Controller {
                 mrtklib_egui_supervisor::mask::mask(warning, &[])
             );
         }
-        Self {
+        let mut controller = Self {
             settings,
             program,
             settings_file,
@@ -66,10 +66,12 @@ impl Controller {
             preview: String::new(),
             notify: Arc::new(notify),
             saved: false,
-        }
+        };
+        controller.refresh_outputs(false);
+        controller
     }
 
-    fn command(&self) -> Result<CommandLine, String> {
+    fn command(&self) -> Result<command::PreparedConversion, String> {
         // A path-resolution error has no fallback settings location, as in navi.
         self.settings_file.as_ref().map_err(Clone::clone)?;
         command::build(
@@ -79,13 +81,24 @@ impl Controller {
         )
     }
 
+    pub fn refresh_outputs(&mut self, input_changed: bool) {
+        let result = self
+            .cwd
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|cwd| self.settings.refresh_outputs(input_changed, cwd));
+        if let Err(error) = result {
+            self.error = Some(error);
+        }
+    }
+
     pub fn tick(&mut self) {
         if let Some(supervisor) = &self.supervisor {
             self.process = Some(supervisor.state());
         }
         if !self.busy() && !self.closing && self.overwrite.is_none() {
             self.preview = match self.command() {
-                Ok(command) => command.preview(),
+                Ok(prepared) => prepared.command.preview(),
                 Err(error) => mrtklib_egui_supervisor::mask::mask(&error, &[]),
             };
         }
@@ -112,12 +125,12 @@ impl Controller {
             return;
         }
         self.error = None;
-        let result = self.command().and_then(|command| {
-            let paths = command::existing_outputs(
-                &self.settings,
-                self.cwd.as_ref().map_err(Clone::clone)?,
-            )?;
-            Ok(PendingConversion { paths, command })
+        let result = self.command().and_then(|prepared| {
+            let paths = prepared.existing_outputs()?;
+            Ok(PendingConversion {
+                paths,
+                command: prepared.command,
+            })
         });
         match result {
             Ok(pending) if !pending.paths.is_empty() => {
@@ -221,7 +234,7 @@ mod tests {
                 input: "test.ubx".into(),
                 ..Default::default()
             };
-            c.settings.refresh_outputs(true);
+            c.refresh_outputs(true);
             c
         }
     }
@@ -293,6 +306,68 @@ mod tests {
             assert!(c.exit_done());
             assert!(fixture.directory.join("gui.json").exists());
         }
+    }
+
+    #[test]
+    fn normalized_automatic_collision_checks_the_suffixed_output_before_launch() {
+        for case in 0..3 {
+            let fixture = Fixture::new();
+            let mut c = fixture.controller();
+            let input = fixture.directory.join("input.obs");
+            let output = fixture.directory.join("input.obs_");
+            std::fs::write(&input, b"input must survive").unwrap();
+            std::fs::write(&output, b"existing output").unwrap();
+            c.program = Ok(fixture.directory.join("unused-mrtk"));
+            c.settings = Settings {
+                input: match case {
+                    0 => "input.obs".into(),
+                    1 => input.to_str().unwrap().into(),
+                    _ => "missing/../input.obs".into(),
+                },
+                directory_enabled: true,
+                directory: match case {
+                    0 => fixture.directory.to_str().unwrap().into(),
+                    1 => ".".into(),
+                    _ => "also-missing/../.".into(),
+                },
+                ..Default::default()
+            };
+            c.refresh_outputs(true);
+            assert!(c.error.is_none(), "{:?}", c.error);
+            c.tick();
+            assert!(c.preview().contains(output.to_str().unwrap()));
+            c.convert();
+            assert!(c.error.is_none(), "{:?}", c.error);
+            assert!(c.supervisor.is_none(), "must await overwrite consent");
+            let pending = c.overwrite.as_ref().unwrap();
+            assert_eq!(pending.paths, std::slice::from_ref(&output));
+            assert_eq!(c.preview(), pending.command.preview());
+            let args = &pending.command.args;
+            let index = args.iter().position(|arg| arg == "-o").unwrap();
+            assert_eq!(Path::new(&args[index + 1]), output);
+            assert_eq!(Path::new(args.last().unwrap()), input);
+            assert_eq!(std::fs::read(input).unwrap(), b"input must survive");
+            assert_eq!(std::fs::read(output).unwrap(), b"existing output");
+        }
+    }
+
+    #[test]
+    fn edited_output_alias_of_input_never_starts_a_child() {
+        let fixture = Fixture::new();
+        let mut c = fixture.controller();
+        c.settings.input = "./input.obs".into();
+        c.settings.outputs[0].path = "missing/../input.obs".into();
+        c.settings.outputs[0].edited = true;
+        c.convert();
+        assert!(
+            c.error
+                .as_ref()
+                .unwrap()
+                .contains("OBS output resolves to the input file")
+        );
+        assert!(c.overwrite.is_none());
+        assert!(c.supervisor.is_none());
+        assert_eq!(c.settings.outputs[0].path, "missing/../input.obs");
     }
 
     #[test]
@@ -371,7 +446,7 @@ mod tests {
         for (row, output) in controller.settings.outputs.iter_mut().enumerate() {
             output.enabled = row < 2;
         }
-        controller.settings.refresh_outputs(true);
+        controller.refresh_outputs(true);
         controller.convert();
         assert!(controller.error.is_none(), "{:?}", controller.error);
         assert!(controller.overwrite.is_none());

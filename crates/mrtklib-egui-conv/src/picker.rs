@@ -32,7 +32,13 @@ impl Picker {
         };
         match std::env::current_dir() {
             Ok(cwd) => {
-                let path = crate::naming::absolute(Path::new(value), &cwd);
+                let path = match crate::naming::absolute(Path::new(value), &cwd) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        picker.error = Some(error);
+                        return picker;
+                    }
+                };
                 let directory = if value.is_empty() {
                     &cwd
                 } else if matches!(target, Target::Directory) {

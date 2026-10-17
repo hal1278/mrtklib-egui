@@ -1,7 +1,7 @@
 //! Build one argv value for execution and preview; MRTKLIB owns option semantics.
 
 use crate::{
-    naming::absolute,
+    naming::{ResolvedPaths, absolute},
     settings::{FORMATS, OUTPUTS, SYSTEMS, Settings},
 };
 use mrtklib_egui_supervisor::CommandLine;
@@ -10,15 +10,44 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) struct PreparedConversion {
+    pub command: CommandLine,
+    outputs: Vec<PathBuf>,
+}
+
+impl std::fmt::Debug for PreparedConversion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedConversion")
+            .field("command", &self.command)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedConversion {
+    /// Check the exact selected paths used in argv; no second resolution pass.
+    pub fn existing_outputs(&self) -> Result<Vec<PathBuf>, String> {
+        let mut paths = Vec::new();
+        for path in &self.outputs {
+            if !path.as_os_str().to_string_lossy().contains('%')
+                && path
+                    .try_exists()
+                    .map_err(|e| format!("cannot check {}: {e}", path.display()))?
+                && !paths.contains(path)
+            {
+                paths.push(path.clone());
+            }
+        }
+        Ok(paths)
+    }
+}
+
 pub(crate) fn build(
     settings: &Settings,
     program: &Path,
     cwd: &Path,
-) -> Result<CommandLine, String> {
+) -> Result<PreparedConversion, String> {
     settings.options.validate()?;
-    if settings.input.is_empty() {
-        return Err("Select an input file".into());
-    }
+    let resolved = ResolvedPaths::new(settings, cwd)?;
     let format = FORMATS
         .get(settings.format)
         .ok_or("invalid input format")?
@@ -83,12 +112,14 @@ pub(crate) fn build(
     for satellite in o.excluded.split_whitespace() {
         pair("-x", satellite);
     }
+    let mut outputs = Vec::new();
     for (row, (_, flag, _)) in OUTPUTS.iter().enumerate() {
         let path = if settings.output_enabled(row) {
-            if settings.outputs[row].path.is_empty() {
-                return Err(format!("{} output path is empty", OUTPUTS[row].0));
-            }
-            absolute(Path::new(&settings.outputs[row].path), cwd).into_os_string()
+            let path = resolved.outputs[row]
+                .as_ref()
+                .ok_or_else(|| format!("{} output path is empty", OUTPUTS[row].0))?;
+            outputs.push(path.clone());
+            path.as_os_str().to_owned()
         } else {
             OsString::new()
         };
@@ -104,30 +135,15 @@ pub(crate) fn build(
             args.push(flag.into());
         }
     }
-    args.push(absolute(Path::new(&settings.input), cwd).into_os_string());
-    Ok(CommandLine {
-        program: absolute(program, cwd),
-        args,
-        working_directory: None,
+    args.push(resolved.input.into_os_string());
+    Ok(PreparedConversion {
+        command: CommandLine {
+            program: absolute(program, cwd)?,
+            args,
+            working_directory: None,
+        },
+        outputs,
     })
-}
-
-pub(crate) fn existing_outputs(settings: &Settings, cwd: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut paths = Vec::new();
-    for row in 0..9 {
-        let value = &settings.outputs[row].path;
-        if settings.output_enabled(row) && !value.contains('%') {
-            let path = absolute(Path::new(value), cwd);
-            if path
-                .try_exists()
-                .map_err(|e| format!("cannot check {}: {e}", path.display()))?
-                && !paths.contains(&path)
-            {
-                paths.push(path);
-            }
-        }
-    }
-    Ok(paths)
 }
 
 #[cfg(test)]
@@ -139,12 +155,13 @@ mod tests {
             input: "data/input.ubx".into(),
             ..Default::default()
         };
-        s.refresh_outputs(true);
+        s.refresh_outputs(true, &std::env::temp_dir()).unwrap();
         s
     }
     fn argv(s: &Settings) -> Vec<String> {
         build(s, Path::new("mrtk"), &std::env::temp_dir())
             .unwrap()
+            .command
             .args
             .iter()
             .map(|s| s.to_str().unwrap().into())
@@ -161,8 +178,8 @@ mod tests {
     fn defaults_all_slots_absolute_paths_and_format_mappings() {
         let s = fixture();
         let command = build(&s, Path::new("mrtk"), &std::env::temp_dir()).unwrap();
-        assert!(command.program.is_absolute());
-        assert!(command.working_directory.is_none());
+        assert!(command.command.program.is_absolute());
+        assert!(command.command.working_directory.is_none());
         let args = argv(&s);
         assert_eq!(args[0], "convert");
         assert_eq!(values(&args, "-tt"), ["0.005"]);
@@ -294,6 +311,7 @@ mod tests {
         }
         let mut s = fixture();
         s.outputs[0].path.clear();
+        s.outputs[0].edited = true;
         assert!(
             build(&s, Path::new("mrtk"), &std::env::temp_dir())
                 .unwrap_err()
@@ -306,11 +324,50 @@ mod tests {
         let mut s = fixture();
         s.options.rinex2_name = true;
         s.outputs[0].enabled = false;
-        s.refresh_outputs(false);
+        s.refresh_outputs(false, &std::env::temp_dir()).unwrap();
         let args = argv(&s);
         assert_eq!(values(&args, "-c"), ["0000"]);
         assert_eq!(values(&args, "-o"), [""]);
         assert!(values(&args, "-n")[0].ends_with("%r%n0.%yP"));
+    }
+
+    #[test]
+    fn prepared_paths_are_shared_by_preview_argv_and_overwrite_check() {
+        let directory = std::env::temp_dir().join(format!(
+            "conv-prepared-{}",
+            mrtklib_egui_supervisor::generate_token()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let input = directory.join("input.obs");
+        let output = directory.join("input.obs_");
+        std::fs::write(&input, b"input").unwrap();
+        std::fs::write(&output, b"existing").unwrap();
+        let mut s = Settings {
+            input: "missing/../input.obs".into(),
+            directory_enabled: true,
+            directory: ".".into(),
+            ..Default::default()
+        };
+        let prepared = build(&s, Path::new("missing/../mrtk"), &directory).unwrap();
+        assert_eq!(prepared.command.program, directory.join("mrtk"));
+        let preview = prepared.command.preview();
+        s.input = "changed.ubx".into();
+        s.outputs[0].path = "changed.obs".into();
+        assert_eq!(
+            prepared.existing_outputs().unwrap(),
+            std::slice::from_ref(&output)
+        );
+        let args: Vec<_> = prepared
+            .command
+            .args
+            .iter()
+            .map(|arg| arg.to_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(values(&args, "-o"), [output.to_str().unwrap()]);
+        assert_eq!(args.last().unwrap(), input.to_str().unwrap());
+        assert!(preview.contains(output.to_str().unwrap()));
+        assert_eq!(std::fs::read(input).unwrap(), b"input");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -324,24 +381,35 @@ mod tests {
             input: "test.ubx".into(),
             ..Default::default()
         };
-        s.refresh_outputs(true);
+        s.refresh_outputs(true, &std::env::temp_dir()).unwrap();
         for name in ["test.obs", "test.nav", "test.gnav", "%r.sbs"] {
             std::fs::write(directory.join(name), b"existing").unwrap();
         }
         s.outputs[8].path = "%r.sbs".into();
+        s.outputs[8].edited = true;
         assert_eq!(
-            existing_outputs(&s, &directory).unwrap(),
+            build(&s, Path::new("mrtk"), &directory)
+                .unwrap()
+                .existing_outputs()
+                .unwrap(),
             [directory.join("test.obs"), directory.join("test.nav")]
         );
         s.outputs[0].enabled = false;
         assert_eq!(
-            existing_outputs(&s, &directory).unwrap(),
+            build(&s, Path::new("mrtk"), &directory)
+                .unwrap()
+                .existing_outputs()
+                .unwrap(),
             [directory.join("test.nav")]
         );
         s.outputs[0].enabled = true;
-        s.outputs[0].path = "test.nav".into();
+        s.outputs[0].path = "unused/.././test.nav".into();
+        s.outputs[0].edited = true;
         assert_eq!(
-            existing_outputs(&s, &directory).unwrap(),
+            build(&s, Path::new("mrtk"), &directory)
+                .unwrap()
+                .existing_outputs()
+                .unwrap(),
             [directory.join("test.nav")]
         );
         std::fs::remove_dir_all(directory).unwrap();

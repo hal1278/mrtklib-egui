@@ -93,10 +93,11 @@ impl Conv {
             });
         });
         if before_input != s.input {
-            s.refresh_outputs(true);
+            self.controller.refresh_outputs(true);
         } else if before_naming != (s.directory_enabled, s.directory.clone()) {
-            s.refresh_outputs(false);
+            self.controller.refresh_outputs(false);
         }
+        let s = &mut self.controller.settings;
         ui.label("RINEX OBS/NAV/GNAV/HNAV/QNAV/LNAV/CNAV/INAV and SBS");
         egui::Grid::new("outputs").num_columns(3).show(ui, |ui| {
             for (row, (label, _, _)) in OUTPUTS.iter().enumerate() {
@@ -208,7 +209,7 @@ impl Conv {
             match draft.validate() {
                 Ok(()) => {
                     self.controller.settings.options = draft.clone();
-                    self.controller.settings.refresh_outputs(false);
+                    self.controller.refresh_outputs(false);
                     self.options = None;
                     self.options_error = None;
                 }
@@ -287,12 +288,12 @@ impl Conv {
                     Target::Input => {
                         if s.input != value {
                             s.input = value;
-                            s.refresh_outputs(true);
+                            self.controller.refresh_outputs(true);
                         }
                     }
                     Target::Directory => {
                         s.directory = value;
-                        s.refresh_outputs(false);
+                        self.controller.refresh_outputs(false);
                     }
                     Target::Output(row) => {
                         s.outputs[row].path = value;
