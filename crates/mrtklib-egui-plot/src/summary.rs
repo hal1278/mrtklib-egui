@@ -91,8 +91,31 @@ pub(crate) fn line(
     let last = display_time(end.time, options);
     let date_end = options.week_time
         || time::format(first, false, true)[..10] != time::format(last, false, true)[..10];
+    let hz = (interval && samples.len() > 1)
+        .then(|| override_hz.or_else(|| rate(samples.iter().map(|s| s.time_ns))))
+        .flatten();
+    let denominator = if interval {
+        expected(start.time_ns, end.time_ns, hz)
+    } else {
+        Some(samples.len())
+    };
+    // `% Interval` shows its denominator: epochs present / expected (rate).
+    let n = if interval {
+        format!(
+            "{}/{} ({})",
+            samples.len(),
+            denominator.map_or("—".into(), |d| d.to_string()),
+            hz.map_or("—".into(), |h| if override_hz.is_some() {
+                format!("{h} Hz manual")
+            } else {
+                format!("{} Hz", rate_text(h))
+            })
+        )
+    } else {
+        samples.len().to_string()
+    };
     let mut text = format!(
-        "[{label}] {} - {} {}  N={}{}",
+        "[{label}] {} - {} {}  N={n}{}",
         time::format(first, options.week_time, true),
         time::format(last, options.week_time, date_end),
         if options.utc && !options.week_time {
@@ -100,17 +123,8 @@ pub(crate) fn line(
         } else {
             "GPST"
         },
-        samples.len(),
         baseline(dataset)
     );
-    let denominator = if interval {
-        let hz = (samples.len() > 1)
-            .then(|| override_hz.or_else(|| rate(samples.iter().map(|s| s.time_ns))))
-            .flatten();
-        expected(start.time_ns, end.time_ns, hz)
-    } else {
-        Some(samples.len())
-    };
     for (q, count) in counts.into_iter().enumerate().filter(|(_, n)| *n > 0) {
         text.push_str(&format!("  Q{q}={count}"));
         if let Some(pct) = denominator.and_then(|n| percentage(count, n)) {
@@ -227,6 +241,27 @@ mod tests {
         assert_eq!(percentage(6, 5), Some(120.0));
         assert_eq!(percentage(1, 0), None);
     }
+    #[test]
+    fn interval_mode_shows_present_expected_and_rate() {
+        let mut d = crate::reader::synthetic();
+        d.points.truncate(3);
+        for (p, clock) in d
+            .points
+            .iter_mut()
+            .zip(["00:00:00", "00:00:01", "00:00:03"])
+        {
+            p.time = time::calendar("2024/08/22", clock).unwrap();
+            p.time_ns = p.time as i128 * 1_000_000_000;
+        }
+        let samples = crate::data::samples_with_origin(&d, None, 0);
+        let o = Options::default();
+        let text = line("1", &samples, &d, &o, true, None);
+        assert!(text.contains("N=3/4 (1.00 Hz)"), "{text}");
+        let text = line("1", &samples, &d, &o, true, Some(2.0));
+        assert!(text.contains("N=3/7 (2 Hz manual)"), "{text}");
+        assert!(line("1", &samples, &d, &o, false, None).contains("N=3"));
+    }
+
     #[test]
     fn summary_converts_gpst_before_formatting_times_and_comparing_dates() {
         let mut d = crate::reader::synthetic();

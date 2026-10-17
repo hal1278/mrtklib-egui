@@ -1302,7 +1302,10 @@ impl PlotApp {
                         "% Epochs"
                     };
                     if ui
-                        .button(label)
+                        .add_sized(
+                            [90.0, ui.spacing().interact_size.y],
+                            egui::Button::new(label),
+                        )
                         .on_hover_text("Quality percentages: whole data interval / epochs present")
                         .clicked()
                     {
