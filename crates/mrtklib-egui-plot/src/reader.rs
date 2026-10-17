@@ -3,9 +3,27 @@ use mrtklib_egui_plotkit::leap::utc_to_gpst;
 use mrtklib_egui_plotkit::{SolutionPoint, llh_to_ecef};
 use std::{io::BufRead, path::Path};
 
+/// Keep exact file timestamp precision for rtktrace statistics; plots still use f64 seconds.
+#[derive(Clone, Debug)]
+pub(crate) struct Epoch {
+    pub point: SolutionPoint,
+    pub time_ns: i128,
+}
+impl std::ops::Deref for Epoch {
+    type Target = SolutionPoint;
+    fn deref(&self) -> &SolutionPoint {
+        &self.point
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for Epoch {
+    fn deref_mut(&mut self) -> &mut SolutionPoint {
+        &mut self.point
+    }
+}
 #[derive(Clone, Debug)]
 pub(crate) struct Dataset {
-    pub points: Vec<SolutionPoint>,
+    pub points: Vec<Epoch>,
     pub base: Option<[f64; 3]>,
     pub relative: bool,
     pub time_system: String,
@@ -144,7 +162,7 @@ impl Layout {
         }
         Some(llh_to_ecef(p))
     }
-    fn row(&self, line: &str, calendar: bool) -> Option<SolutionPoint> {
+    fn row(&self, line: &str, calendar: bool) -> Option<Epoch> {
         let f: Vec<_> = line.split_whitespace().collect();
         let dms = self.coordinates == Coordinates::Dms;
         let count = if dms { 19 } else { 15 } + if self.velocity { 9 } else { 0 };
@@ -168,6 +186,19 @@ impl Layout {
             "JST" => utc_to_gpst(time - 9.0 * 3600.0),
             _ => time,
         };
+        let (whole_text, fraction) = f[1].split_once('.').unwrap_or((f[1], ""));
+        let whole = if calendar {
+            crate::time::calendar(f[0], whole_text)?
+        } else {
+            f64::from(f[0].parse::<u32>().ok()?) * 604800.0
+                + f64::from(whole_text.parse::<u32>().ok()?)
+        };
+        let whole = match self.time_system.as_str() {
+            "UTC" => utc_to_gpst(whole),
+            "JST" => utc_to_gpst(whole - 9.0 * 3600.0),
+            _ => whole,
+        };
+        let time_ns = whole as i128 * 1_000_000_000 + crate::time::fractional_ns(fraction)?;
         let position = self.position(&f[2..], false)?;
         let q = if dms { 9 } else { 5 };
         let quality: u8 = f[q].parse().ok()?;
@@ -179,13 +210,16 @@ impl Layout {
         for field in &f[q + 2..] {
             number(field)?;
         }
-        Some(SolutionPoint {
-            time,
-            position,
-            quality,
-            satellites,
-            age: number(f[q + 8])?,
-            ratio: number(f[q + 9])?,
+        Some(Epoch {
+            time_ns,
+            point: SolutionPoint {
+                time,
+                position,
+                quality,
+                satellites,
+                age: number(f[q + 8])?,
+                ratio: number(f[q + 9])?,
+            },
         })
     }
 }
@@ -312,7 +346,7 @@ fn parse_with_time_layout(
         }
     }
     // Stable ordering retains duplicate epochs; no data is discarded or merged.
-    dataset.points.sort_by(|a, b| a.time.total_cmp(&b.time));
+    dataset.points.sort_by_key(|p| p.time_ns);
     Ok(dataset)
 }
 
@@ -356,6 +390,27 @@ mod tests {
             text
         };
         parse(text.as_bytes()).unwrap()
+    }
+    #[test]
+    fn exact_decimal_timestamps_keep_the_rtktrace_five_ms_boundary() {
+        for (system, calendar) in [("GPST", true), ("UTC", true), ("JST", false)] {
+            let mut text = format!("% {system} {LLH}\n");
+            for seconds in ["00.000", "00.005", "00.010"] {
+                let stamp = if calendar {
+                    format!("2024/08/22 11:00:{seconds}")
+                } else {
+                    format!("2328 3852{seconds}")
+                };
+                text.push_str(&format!("{stamp} 35 139 40 1 15 .1 .2 .3 0 0 0 1 3\n"));
+            }
+            let d = parse(text.as_bytes()).unwrap();
+            assert_eq!(d.points.len(), 3);
+            assert_eq!(d.points[1].time_ns - d.points[0].time_ns, 5_000_000);
+            assert_eq!(
+                crate::summary::rate(d.points.iter().map(|p| p.time_ns)),
+                None
+            );
+        }
     }
     #[test]
     fn writer_layouts_and_time_systems() {

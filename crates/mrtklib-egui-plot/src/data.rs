@@ -72,9 +72,28 @@ pub(crate) struct Sample {
     pub source: usize,
     pub index: usize,
     pub time: f64,
+    pub time_ns: i128,
     pub enu: [f64; 3],
     pub quality: u8,
+    pub height: Option<f64>,
+    pub vertical: Option<f64>,
     pub nsat: [f64; 3],
+}
+impl Sample {
+    pub fn component(&self, component: usize) -> Option<f64> {
+        if component == 2 {
+            self.vertical
+        } else {
+            Some(self.enu[component])
+        }
+    }
+    pub fn set_vertical(&mut self, height: bool) {
+        self.vertical = if height {
+            self.height
+        } else {
+            Some(self.enu[2])
+        };
+    }
 }
 #[cfg(test)]
 pub(crate) fn samples(
@@ -94,7 +113,8 @@ pub(crate) fn samples_with_origin(
     origin: Option<&Origin>,
     quality: u8,
 ) -> Vec<Sample> {
-    data.points
+    let mut samples: Vec<_> = data
+        .points
         .iter()
         .enumerate()
         .filter(|(_, p)| quality == 0 || p.quality == quality)
@@ -102,15 +122,22 @@ pub(crate) fn samples_with_origin(
             source: 0,
             index,
             time: p.time,
+            time_ns: p.time_ns,
             enu: if data.relative {
                 p.position
             } else {
                 origin.map_or(p.position, |o| ecef_to_enu(p.position, o.at(p.time)))
             },
+            height: (!data.relative).then(|| mrtklib_egui_plotkit::ecef_to_llh(p.position)[2]),
+            vertical: None,
             quality: p.quality,
             nsat: [f64::from(p.satellites), p.age, p.ratio],
         })
-        .collect()
+        .collect();
+    for sample in &mut samples {
+        sample.set_vertical(false);
+    }
+    samples
 }
 /// RTKPLOT TIMEPOS::diff: ordered, one-to-one matches within default TTOL.
 pub(crate) fn difference(a: &[Sample], b: &[Sample], quality: u8) -> Vec<Sample> {
@@ -129,6 +156,8 @@ pub(crate) fn difference(a: &[Sample], b: &[Sample], quality: u8) -> Vec<Sample>
                 result.push(Sample {
                     source: 2,
                     enu: std::array::from_fn(|k| a[i].enu[k] - b[j].enu[k]),
+                    height: a[i].height.zip(b[j].height).map(|(a, b)| a - b),
+                    vertical: a[i].vertical.zip(b[j].vertical).map(|(a, b)| a - b),
                     quality: q,
                     ..a[i].clone()
                 });
@@ -170,6 +199,30 @@ pub(crate) fn segments(samples: &[Sample], time_series: bool) -> Vec<std::ops::R
 mod tests {
     use super::*;
     use mrtklib_egui_plotkit::SolutionPoint;
+    #[test]
+    fn height_component_is_absolute_independent_of_origin_and_difference_subtracts_it() {
+        let mut d = dataset();
+        d.points[0].position = llh_to_ecef([35.0, 139.0, 100.0]);
+        d.points[1].position = llh_to_ecef([35.0, 139.0, 103.0]);
+        let mut a = samples(&d, &Options::default(), 0).unwrap();
+        for s in &mut a {
+            s.set_vertical(true);
+        }
+        assert!((a[0].component(2).unwrap() - 100.0).abs() < 1e-5);
+        assert!((a[1].component(2).unwrap() - 103.0).abs() < 1e-5);
+        assert!((a[0].enu[2] - a[0].height.unwrap()).abs() > 1.0);
+        let mut b = a.clone();
+        b[0].height = Some(90.0);
+        let mut delta = difference(&a, &b, 0);
+        delta[0].set_vertical(true);
+        assert!((delta[0].component(2).unwrap() - 10.0).abs() < 1e-5);
+        d.relative = true;
+        let mut relative = samples(&d, &Options::default(), 0).unwrap();
+        relative[0].set_vertical(true);
+        assert_eq!(relative[0].component(2), None);
+        relative[0].set_vertical(false);
+        assert_eq!(relative[0].component(2), Some(d.points[0].position[2]));
+    }
     #[test]
     fn difference_matches_once_without_interpolation_and_filters_the_larger_q() {
         let mut a = samples(&dataset(), &Options::default(), 0).unwrap();
@@ -220,13 +273,16 @@ mod tests {
     fn dataset() -> Dataset {
         Dataset {
             points: (0..3)
-                .map(|i| SolutionPoint {
-                    time: f64::from(i) * 100.0,
-                    position: [6_378_137.0, f64::from(i) * 10.0, 0.0],
-                    quality: i as u8 + 1,
-                    satellites: 12,
-                    age: 1.0,
-                    ratio: 3.0,
+                .map(|i| crate::reader::Epoch {
+                    time_ns: i128::from(i) * 100_000_000_000,
+                    point: SolutionPoint {
+                        time: f64::from(i) * 100.0,
+                        position: [6_378_137.0, f64::from(i) * 10.0, 0.0],
+                        quality: i as u8 + 1,
+                        satellites: 12,
+                        age: 1.0,
+                        ratio: 3.0,
+                    },
                 })
                 .collect(),
             base: Some([6_378_137.0, 0.0, 0.0]),

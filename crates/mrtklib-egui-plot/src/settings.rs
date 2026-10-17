@@ -86,6 +86,22 @@ impl Options {
         Ok(())
     }
 }
+/// rtktrace's indexed visibility mask; All includes the unknown quality endpoints.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct QualityFilter(pub [bool; 8]);
+impl Default for QualityFilter {
+    fn default() -> Self {
+        Self([true; 8])
+    }
+}
+impl QualityFilter {
+    pub fn visible(&self, quality: u8) -> bool {
+        self.0.get(usize::from(quality)).copied().unwrap_or(false)
+    }
+    pub fn all(&mut self) {
+        self.0.fill(true);
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Settings {
@@ -93,7 +109,10 @@ pub(crate) struct Settings {
     pub last_file2: Option<PathBuf>,
     pub plot: usize,
     pub components: [bool; 3],
-    pub quality: u8,
+    pub qualities: QualityFilter,
+    pub interval_percentages: bool,
+    pub height: bool,
+    pub cursor_llh: bool,
     pub options: Options,
 }
 impl Default for Settings {
@@ -103,7 +122,10 @@ impl Default for Settings {
             last_file2: None,
             plot: 0,
             components: [true; 3],
-            quality: 0,
+            qualities: QualityFilter::default(),
+            interval_percentages: false,
+            height: false,
+            cursor_llh: false,
             options: Options::default(),
         }
     }
@@ -127,9 +149,20 @@ pub(crate) fn load(path: &Path) -> Result<Settings, String> {
         Err(e) => return Err(format!("cannot read settings {}: {e}", path.display())),
     };
     let result = (|| {
-        let settings: Settings = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let mut settings: Settings =
+            serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        if value.get("qualities").is_none()
+            && let Some(old) = value.get("quality")
+        {
+            let q = old
+                .as_u64()
+                .filter(|q| *q <= 6)
+                .ok_or("invalid quality selection")?;
+            settings.qualities = QualityFilter(std::array::from_fn(|i| q == 0 || i as u64 == q));
+        }
         settings.options.validate()?;
-        if settings.plot >= PLOTS.len() || settings.quality > 6 {
+        if settings.plot >= PLOTS.len() {
             return Err("invalid plot or quality selection".into());
         }
         Ok(settings)
@@ -143,6 +176,18 @@ pub(crate) fn save(path: &Path, settings: &Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quality_mask_is_indexed_independent_and_all_includes_unknowns() {
+        let mut q = QualityFilter::default();
+        q.0[2] = false;
+        assert!(!q.visible(2));
+        assert!(q.visible(1));
+        assert!(q.visible(0));
+        assert!(!q.visible(8));
+        q.0.fill(false);
+        q.all();
+        assert_eq!(q.0, [true; 8]);
+    }
     #[test]
     fn origin_range_units_and_order() {
         assert_eq!(ORIGIN_RANGES.first(), Some(&("5cm", 0.05)));
@@ -172,7 +217,7 @@ mod tests {
             last_file: Some("入力.pos".into()),
             last_file2: Some("比較.pos".into()),
             plot: 2,
-            quality: 6,
+            qualities: QualityFilter([false, false, false, false, false, false, true, false]),
             options: Options {
                 origin: 5,
                 auto_fit: false,
@@ -185,7 +230,16 @@ mod tests {
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path).unwrap(), s);
-        for text in ["{bad", r#"{"plot":9}"#, r#"{"options":{"y_range":0}}"#] {
+        std::fs::write(&path, r#"{"quality":6}"#).unwrap();
+        let migrated = load(&path).unwrap();
+        assert!(migrated.qualities.visible(6));
+        assert!(!migrated.qualities.visible(1));
+        for text in [
+            r#"{"quality":7}"#,
+            "{bad",
+            r#"{"plot":9}"#,
+            r#"{"options":{"y_range":0}}"#,
+        ] {
             std::fs::write(&path, text).unwrap();
             assert!(load(&path).is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);

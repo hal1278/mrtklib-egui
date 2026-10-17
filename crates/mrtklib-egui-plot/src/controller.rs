@@ -48,6 +48,7 @@ pub(crate) struct Controller {
     pub all_samples: [Vec<data::Sample>; 2],
     pub samples: Vec<data::Sample>,
     pub error: Option<String>,
+    pub file_errors: [Vec<String>; 2],
     pub loading: bool,
     pub revision: u64,
     /// Successful file loads are distinct from sample-only revisions.
@@ -86,6 +87,7 @@ impl Controller {
             all_samples: Default::default(),
             samples: vec![],
             error,
+            file_errors: Default::default(),
             loading: false,
             revision: 0,
             load_revision: 0,
@@ -175,11 +177,11 @@ impl Controller {
         if std::mem::take(&mut self.discard_pending) {
             return;
         }
-        let mut errors = Vec::new();
         let mut loaded = false;
         for (slot, path, result) in result {
             match result {
                 Ok(dataset) => {
+                    self.file_errors[slot].clear();
                     if slot == 0 {
                         self.dataset = Some(dataset);
                         self.settings.last_file = Some(path);
@@ -191,7 +193,11 @@ impl Controller {
                     self.selection.difference = false;
                     loaded = true;
                 }
-                Err(error) => errors.push(format!("Solution-{}: {error}", slot + 1)),
+                Err(error) => {
+                    if !self.file_errors[slot].contains(&error) {
+                        self.file_errors[slot].push(error);
+                    }
+                }
             }
         }
         self.error = None;
@@ -200,15 +206,8 @@ impl Controller {
             self.rebuild();
             self.persist();
         }
-        if !errors.is_empty() {
-            let error = errors.join("; ");
-            self.error = Some(
-                self.error
-                    .take()
-                    .map_or(error.clone(), |e| format!("{e}; {error}")),
-            );
-        }
     }
+
     pub fn toggle(&mut self, button: usize) {
         if button == 2 && !self.difference_available() {
             return;
@@ -266,11 +265,7 @@ impl Controller {
         }
         if self.selection.difference {
             if self.settings.plot != 2 {
-                self.samples = data::difference(
-                    &self.all_samples[0],
-                    &self.all_samples[1],
-                    self.settings.quality,
-                );
+                self.samples = data::difference(&self.all_samples[0], &self.all_samples[1], 0);
             }
         } else {
             self.samples = self
@@ -279,12 +274,14 @@ impl Controller {
                 .enumerate()
                 .filter(|(slot, _)| self.selection.data[*slot])
                 .flat_map(|(_, s)| s)
-                .filter(|s| self.settings.quality == 0 || s.quality == self.settings.quality)
                 .cloned()
                 .collect();
         }
+        self.samples
+            .retain(|s| self.settings.qualities.visible(s.quality));
         // Plot coordinates are display times, so UTC ticks fall on round UTC times.
         for s in &mut self.samples {
+            s.set_vertical(self.settings.height);
             s.time = display_time(s.time, &self.settings.options);
         }
     }
@@ -305,6 +302,7 @@ impl Controller {
         self.dataset2 = None;
         self.samples.clear();
         self.all_samples = Default::default();
+        self.file_errors = Default::default();
         self.settings.last_file = None;
         self.settings.last_file2 = None;
         self.error = None;
@@ -334,6 +332,7 @@ impl Controller {
             all_samples: Default::default(),
             samples: vec![],
             error: None,
+            file_errors: Default::default(),
             loading: false,
             revision: 0,
             load_revision: 1,
@@ -444,7 +443,12 @@ mod tests {
         c.poll();
         assert_eq!(c.dataset.as_ref().unwrap().points.len(), 1);
         assert_eq!(c.settings.last_file, Some(path));
-        assert!(c.error.as_ref().unwrap().contains("cannot open solution"));
+        assert!(
+            c.file_errors[0]
+                .last()
+                .unwrap()
+                .contains("cannot open solution")
+        );
         c.clear();
         assert!(c.dataset.is_none());
         assert!(c.dataset2.is_none());

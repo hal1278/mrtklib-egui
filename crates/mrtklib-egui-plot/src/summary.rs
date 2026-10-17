@@ -1,0 +1,194 @@
+//! rtktrace rate/interval statistics and RTKPLOT baseline display (see design.md).
+use crate::{controller::display_time, data::Sample, reader::Dataset, settings::Options, time};
+
+/// rtktrace src/analysis/sample_rate.cpp:8–29; strict >5 ms threshold.
+pub(crate) fn rate(times: impl IntoIterator<Item = i128>) -> Option<f64> {
+    let times: Vec<_> = times.into_iter().collect();
+    times
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .filter(|dt| *dt > 5_000_000)
+        .min()
+        .map(|dt| 1e9 / dt as f64)
+}
+
+/// rtktrace src/analysis/statistics.cpp:37–65; inclusive interval, rounded then +1.
+pub(crate) fn expected(start: i128, end: i128, hz: Option<f64>) -> Option<usize> {
+    let hz = hz.filter(|hz| hz.is_finite() && *hz > 0.0)?;
+    if end < start {
+        return None;
+    }
+    let duration_ns = end - start;
+    let intervals = (duration_ns as f64 / 1e9 * hz + 0.5).floor();
+    if !intervals.is_finite() || intervals >= usize::MAX as f64 {
+        return None;
+    }
+    Some(intervals as usize + 1)
+}
+
+pub(crate) fn percentage(count: usize, denominator: usize) -> Option<f64> {
+    (denominator != 0).then(|| count as f64 / denominator as f64 * 100.0)
+}
+
+pub(crate) fn baseline(dataset: &Dataset) -> String {
+    let base = dataset
+        .base
+        .filter(|p| p.iter().map(|v| v * v).sum::<f64>() > 0.0);
+    if !dataset.relative && base.is_none() {
+        return String::new();
+    }
+    let lengths = dataset.points.iter().map(|p| {
+        let r = if dataset.relative {
+            p.position
+        } else {
+            std::array::from_fn(|i| p.position[i] - base.unwrap()[i])
+        };
+        r.iter().map(|v| v * v).sum::<f64>().sqrt()
+    });
+    let (min, max) = lengths.fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), b| {
+        (min.min(b), max.max(b))
+    });
+    if !min.is_finite() {
+        return String::new();
+    }
+    if min + 100.0 < max {
+        format!("  B={:.1}–{:.1}km", min / 1000.0, max / 1000.0)
+    } else {
+        format!("  B={:.1}km", min / 1000.0)
+    }
+}
+
+pub(crate) fn line(
+    label: &str,
+    samples: &[Sample],
+    dataset: &Dataset,
+    options: &Options,
+    interval: bool,
+) -> String {
+    let mut counts = [0usize; 8];
+    for s in samples {
+        counts[usize::from(s.quality)] += 1;
+    }
+    let Some((start, end)) = samples.first().zip(samples.last()) else {
+        return format!("[{label}] N=0");
+    };
+    let first = display_time(start.time, options);
+    let last = display_time(end.time, options);
+    let date_end = options.week_time
+        || time::format(first, false, true)[..10] != time::format(last, false, true)[..10];
+    let mut text = format!(
+        "[{label}] {} - {} {}  N={}{}",
+        time::format(first, options.week_time, true),
+        time::format(last, options.week_time, date_end),
+        if options.utc && !options.week_time {
+            "UTC"
+        } else {
+            "GPST"
+        },
+        samples.len(),
+        baseline(dataset)
+    );
+    let denominator = if interval {
+        expected(
+            start.time_ns,
+            end.time_ns,
+            rate(samples.iter().map(|s| s.time_ns)),
+        )
+        .unwrap_or(0)
+    } else {
+        samples.len()
+    };
+    for (q, count) in counts.into_iter().enumerate().filter(|(_, n)| *n > 0) {
+        match percentage(count, denominator) {
+            Some(pct) => text.push_str(&format!("  Q{q}={count} ({pct:.1}%)")),
+            None => text.push_str(&format!("  Q{q}={count} (unavailable)")),
+        }
+    }
+    text
+}
+
+/// Keep the complete filename; remove a middle portion of directories by measured width.
+pub(crate) fn elide_path(path: &str, width: f32, measure: impl Fn(&str) -> f32) -> String {
+    if measure(path) <= width {
+        return path.into();
+    }
+    let Some(split) = path.rfind(['/', '\\']) else {
+        return path.into();
+    };
+    let (directory, file) = path.split_at(split + 1);
+    let chars: Vec<char> = directory.chars().collect();
+    for keep in (0..chars.len()).rev() {
+        let left = keep.div_ceil(2);
+        let right = keep / 2;
+        let candidate = format!(
+            "{}...{}{file}",
+            chars[..left].iter().collect::<String>(),
+            chars[chars.len() - right..].iter().collect::<String>()
+        );
+        if measure(&candidate) <= width {
+            return candidate;
+        }
+    }
+    format!("...{file}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rtktrace_rate_threshold_duplicates_and_gaps() {
+        assert_eq!(rate([]), None);
+        assert_eq!(rate([1_000_000_000]), None);
+        assert_eq!(rate([0, 5_000_000, 5_000_000, 4_000_000]), None);
+        assert_eq!(rate([0, 5_000_000, 15_000_000, 1_015_000_000]), Some(100.0));
+        assert_eq!(
+            rate([0, 1_000_000_000, 4_000_000_000, 5_000_000_000]),
+            Some(1.0)
+        );
+    }
+    #[test]
+    fn expected_interval_percentages_do_not_clamp_duplicates() {
+        assert_eq!(expected(0, 4_000_000_000, Some(1.0)), Some(5));
+        assert_eq!(expected(0, 1_500_000_000, Some(1.0)), Some(3));
+        assert_eq!(expected(0, 0, Some(1.0)), Some(1));
+        assert_eq!(expected(1_000_000_000, 0, Some(1.0)), None);
+        for hz in [None, Some(0.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            assert_eq!(expected(0, 4_000_000_000, hz), None);
+        }
+        assert_eq!(percentage(3, 5), Some(60.0));
+        assert_eq!(percentage(6, 5), Some(120.0));
+        assert_eq!(percentage(1, 0), None);
+    }
+    #[test]
+    fn path_ellipsis_preserves_unicode_and_entire_filename() {
+        let measure = |s: &str| s.chars().count() as f32;
+        assert_eq!(
+            elide_path("/one/two/file.pos", 100.0, measure),
+            "/one/two/file.pos"
+        );
+        for width in [1.0, 12.0, 18.0] {
+            let s = elide_path("/長い/ディレクトリ/測位結果.pos", width, measure);
+            assert!(s.ends_with("測位結果.pos"));
+            assert!(s.contains("..."));
+        }
+        assert_eq!(
+            elide_path("long_filename.pos", 1.0, measure),
+            "long_filename.pos"
+        );
+    }
+    #[test]
+    fn baseline_omits_absent_base_and_uses_strict_spread() {
+        let mut d = crate::reader::synthetic();
+        d.base = None;
+        assert!(baseline(&d).is_empty());
+        d.base = Some([0.0; 3]);
+        assert!(baseline(&d).is_empty());
+        d.relative = true;
+        d.points.truncate(2);
+        d.points[0].position = [1000.0, 0.0, 0.0];
+        d.points[1].position = [1100.0, 0.0, 0.0];
+        assert_eq!(baseline(&d), "  B=1.0km");
+        d.points[1].position[0] += 0.1;
+        assert_eq!(baseline(&d), "  B=1.0–1.1km");
+    }
+}
