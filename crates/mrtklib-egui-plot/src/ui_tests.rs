@@ -14,6 +14,9 @@ fn harness(plot: usize) -> Harness<'static, PlotApp> {
         .unwrap_or_else(crate::reader::synthetic);
     let mut controller = Controller::fixture(dataset);
     controller.settings.plot = plot;
+    harness_with_controller(controller)
+}
+fn harness_with_controller(controller: Controller) -> Harness<'static, PlotApp> {
     let mut styled = false;
     let mut h = Harness::builder()
         .with_max_steps(20)
@@ -480,5 +483,129 @@ fn track_fit_uses_the_settled_frame_and_contains_every_sample() {
             (b.x.span() / f64::from(frame.width()) - b.y.span() / f64::from(frame.height())).abs()
                 < 1e-9
         );
+    }
+}
+
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_TEST_MRTKLIB_DIR, MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_solution2_overlay_and_difference() {
+    let root = PathBuf::from(
+        std::env::var_os("MRTKLIB_EGUI_TEST_MRTKLIB_DIR")
+            .expect("MRTKLIB_EGUI_TEST_MRTKLIB_DIR is required for the two-file snapshot"),
+    );
+    let read = |suffix| {
+        crate::reader::read(&root.join(format!(
+            "tests/data/malib/MALIB_OSS_data_obsnav_240822-1100.{suffix}.pos"
+        )))
+        .unwrap()
+    };
+    let mut controller = Controller::fixture(read("pp"));
+    controller.dataset2 = Some(read("rt"));
+    controller.toggle(1);
+    assert!(controller.error.is_none());
+    assert!(controller.samples.iter().any(|s| s.source == 0));
+    assert!(controller.samples.iter().any(|s| s.source == 1));
+    let mut h = harness_with_controller(controller);
+    save(&mut h, "snapshot_plot_solution2_overlay");
+    h.get_by_label("Data 1-2").click();
+    h.run();
+    h.get_by_label("Fit Vertical").click();
+    h.run();
+    assert!(!h.state().controller.samples.is_empty());
+    assert!(h.state().controller.samples.iter().all(|s| s.source == 2));
+    save(&mut h, "snapshot_plot_solution2_difference");
+    select(&mut h, "Gnd Trk", "Position");
+    save(&mut h, "snapshot_plot_solution2_difference_position");
+    h.get_by_label("Data 1").click();
+    h.run();
+    h.get_by_label("Data 2").click();
+    h.run();
+    h.get_by_label("Fit Vertical").click();
+    h.run();
+    save(&mut h, "snapshot_plot_solution2_overlay_position");
+}
+
+fn two_solutions(plot: usize) -> Controller {
+    let mut controller = Controller::fixture(crate::reader::synthetic());
+    let mut second = crate::reader::synthetic();
+    for p in &mut second.points {
+        p.position[0] += 50.0;
+        p.time += 0.01;
+        p.quality = 5;
+    }
+    controller.dataset2 = Some(second);
+    controller.settings.plot = plot;
+    controller.rebuild();
+    controller
+}
+
+#[test]
+fn dataset_buttons_status_and_line_styles_follow_rtkplot() {
+    let mut h = harness_with_controller(two_solutions(1));
+    assert_eq!(line_style(0), LineStyle::Solid);
+    assert_eq!(line_style(1), LineStyle::Dashed { length: 1.0 });
+    assert_eq!(line_style(2), LineStyle::Solid);
+    h.get_by_label("Data 2").click();
+    h.run();
+    assert_eq!(h.state().controller.selection.data, [true, true]);
+    assert!(h.state().epoch_text().starts_with("[1]"));
+    assert!(h.state().summary().starts_with("[1]"));
+    h.get_by_label("Data 1").click();
+    h.run();
+    assert_eq!(h.state().controller.selection.data, [false, true]);
+    assert!(h.state().epoch_text().starts_with("[2]"));
+    assert!(h.state().summary().starts_with("[2]"));
+    h.get_by_label("Data 1-2").click();
+    h.run();
+    assert_eq!(h.state().controller.selection.data, [false, false]);
+    assert!(h.state().controller.selection.difference);
+    assert!(h.state().summary().contains("Q5 SINGLE:"));
+    // RTKPLOT's epoch text still describes the original solution 1 in difference mode.
+    assert!(h.state().epoch_text().starts_with("[1]"));
+    select(&mut h, "Position", "NSat");
+    assert!(h.get_by_label("Data 1-2").accesskit_node().is_disabled());
+    assert!(h.state().controller.samples.is_empty());
+    h.get_by_label("Data 2").click();
+    h.run();
+    assert!(!h.state().controller.selection.difference);
+    assert!(h.state().controller.samples.iter().all(|s| s.source == 1));
+    h.get_by_label("Data 2").click();
+    h.run();
+    assert!(h.state().controller.samples.is_empty());
+    assert!(h.state().summary().is_empty());
+}
+
+#[test]
+fn range_fit_includes_selected_series_or_the_difference() {
+    for plot in [0, 1] {
+        let mut h = harness_with_controller(two_solutions(plot));
+        h.get_by_label("Data 2").click();
+        h.run();
+        h.get_by_label("Fit Vertical").click();
+        h.run();
+        let fits = |h: &Harness<'_, PlotApp>| {
+            let app = h.state();
+            for s in &app.controller.samples {
+                if plot == 0 {
+                    assert!(
+                        (app.viewport.track.x.min..=app.viewport.track.x.max).contains(&s.enu[0])
+                    );
+                    assert!(
+                        (app.viewport.track.y.min..=app.viewport.track.y.max).contains(&s.enu[1])
+                    );
+                } else {
+                    for (i, range) in app.viewport.vertical.iter().enumerate() {
+                        assert!((range.min..=range.max).contains(&s.enu[i]));
+                    }
+                }
+            }
+        };
+        fits(&h);
+        h.get_by_label("Data 1-2").click();
+        h.run();
+        h.get_by_label("Fit Vertical").click();
+        h.run();
+        fits(&h);
+        assert!(!h.state().controller.samples.is_empty());
     }
 }

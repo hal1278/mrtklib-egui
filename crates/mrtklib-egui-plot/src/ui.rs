@@ -8,7 +8,7 @@ use crate::{
     time,
 };
 use eframe::egui::{self, Color32};
-use egui_plot::{AxisHints, Line, Plot, PlotBounds, PlotPoint, Points};
+use egui_plot::{AxisHints, Line, LineStyle, Plot, PlotBounds, PlotPoint, Points};
 use mrtklib_egui_common::file_dialog::{FileDialog, Target};
 use mrtklib_egui_plotkit::{ecef_to_llh, horizontal_2d, solution_style, statistics};
 use mrtklib_egui_supervisor::mask::mask;
@@ -16,7 +16,8 @@ use mrtklib_egui_supervisor::mask::mask;
 pub(crate) const INITIAL_SIZE: [f32; 2] = [1000.0, 760.0];
 pub(crate) struct PlotApp {
     controller: Controller,
-    dialog: Option<FileDialog>,
+    dialog: Option<(usize, FileDialog)>,
+    discard_dialog: bool,
     options: Option<Options>,
     options_error: Option<String>,
     viewport: Viewport,
@@ -109,6 +110,7 @@ impl PlotApp {
         Self {
             controller,
             dialog: None,
+            discard_dialog: false,
             options: None,
             options_error: None,
             viewport: Viewport::default(),
@@ -122,12 +124,15 @@ impl PlotApp {
     }
     fn update_logic(&mut self, ctx: &egui::Context) {
         self.controller.poll();
-        if let Some(dialog) = &self.dialog {
+        if let Some((slot, dialog)) = &self.dialog {
+            let slot = *slot;
             match dialog.poll() {
                 Ok(Some(selection)) => {
                     self.dialog = None;
-                    if let Some(path) = selection.path {
-                        self.controller.open(path);
+                    if !std::mem::take(&mut self.discard_dialog)
+                        && let Some(path) = selection.path
+                    {
+                        self.controller.open(slot, path);
                     }
                 }
                 Err(e) => {
@@ -145,7 +150,8 @@ impl PlotApp {
                 .collect()
         });
         if paths.len() == 1 {
-            self.controller.open(paths[0].clone());
+            self.controller
+                .open(self.controller.selection.primary(), paths[0].clone());
         } else if paths.len() > 1 {
             self.controller.error = Some("Open one solution file at a time".into());
         }
@@ -161,12 +167,22 @@ impl PlotApp {
         }
         if self.revision != self.controller.revision {
             self.revision = self.controller.revision;
-            self.selected = self.controller.samples.first().map(|s| s.index);
+            self.selected = self
+                .controller
+                .samples
+                .iter()
+                .find(|s| {
+                    s.source == self.controller.selection.primary()
+                        || self.controller.selection.difference
+                })
+                .map(|s| s.index);
             self.hovered = None;
         }
     }
     fn time_extent(&self) -> Option<Range> {
-        let data = self.controller.dataset.as_ref()?;
+        let data = self
+            .controller
+            .dataset_at(self.controller.selection.primary())?;
         Some(Range::new(
             data.points.first()?.time,
             data.points.last()?.time,
@@ -292,33 +308,41 @@ impl PlotApp {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 let available = !self.controller.loading && self.dialog.is_none();
-                if ui
-                    .add_enabled(available, egui::Button::new("Open Solution-1..."))
-                    .clicked()
-                {
-                    let ctx = ui.ctx().clone();
-                    match FileDialog::open(
-                        Target::Input,
-                        self.controller.settings.last_file.clone(),
-                        move || ctx.request_repaint(),
-                    ) {
-                        Ok(dialog) => self.dialog = Some(dialog),
-                        Err(e) => self.controller.error = Some(e),
+                for slot in 0..2 {
+                    if ui
+                        .add_enabled(
+                            available,
+                            egui::Button::new(format!("Open Solution-{}...", slot + 1)),
+                        )
+                        .clicked()
+                    {
+                        let ctx = ui.ctx().clone();
+                        match FileDialog::open(
+                            Target::Input,
+                            self.controller.last_file(slot),
+                            move || ctx.request_repaint(),
+                        ) {
+                            Ok(dialog) => {
+                                self.dialog = Some((slot, dialog));
+                                self.discard_dialog = false;
+                            }
+                            Err(e) => self.controller.error = Some(e),
+                        }
+                        ui.close();
                     }
-                    ui.close();
                 }
                 if ui
                     .add_enabled(
-                        available && self.controller.settings.last_file.is_some(),
+                        available && (0..2).any(|slot| self.controller.last_file(slot).is_some()),
                         egui::Button::new("Reload"),
                     )
                     .clicked()
                 {
-                    self.controller
-                        .open(self.controller.settings.last_file.clone().unwrap());
+                    self.controller.reload();
                     ui.close();
                 }
                 if ui.button("Clear").clicked() {
+                    self.discard_dialog = self.dialog.is_some();
                     self.controller.clear();
                     ui.close();
                 }
@@ -339,13 +363,34 @@ impl PlotApp {
                     ui.close();
                 }
             });
-            if let Some(path) = &self.controller.settings.last_file {
-                ui.label(mask(&path.to_string_lossy(), &[]));
+            for slot in 0..2 {
+                if let Some(path) = self.controller.last_file(slot) {
+                    ui.label(mask(
+                        &format!("[{}] {}", slot + 1, path.to_string_lossy()),
+                        &[],
+                    ));
+                }
             }
         });
         ui.horizontal_wrapped(|ui| {
             let before = self.controller.settings.clone();
             combo(ui, "plot type", &mut self.controller.settings.plot, &PLOTS);
+            for (button, label) in ["Data 1", "Data 2", "Data 1-2"].iter().enumerate() {
+                let selected = if button == 2 {
+                    self.controller.selection.difference
+                } else {
+                    self.controller.selection.data[button]
+                };
+                if ui
+                    .add_enabled(
+                        button != 2 || self.controller.difference_available(),
+                        egui::Button::new(*label).selected(selected),
+                    )
+                    .clicked()
+                {
+                    self.controller.toggle(button);
+                }
+            }
             ui.add_enabled_ui(self.controller.settings.plot != 0, |ui| {
                 for i in 0..3 {
                     ui.toggle_value(
@@ -414,6 +459,7 @@ impl PlotApp {
                     self.controller.rebuild();
                 }
                 if before.plot != self.controller.settings.plot {
+                    self.controller.rebuild();
                     self.viewport.plot_type_changed(
                         self.controller.settings.plot,
                         self.controller.settings.options.auto_fit,
@@ -521,13 +567,28 @@ impl PlotApp {
         }
     }
     fn epoch_text(&self) -> String {
-        let Some(dataset) = &self.controller.dataset else {
+        if !self.controller.selection.difference
+            && !self.controller.selection.data.iter().any(|s| *s)
+        {
+            return String::new();
+        }
+        if self
+            .controller
+            .combination_error(self.controller.selection)
+            .is_some()
+        {
+            return String::new();
+        }
+        let primary = self.controller.selection.primary();
+        let Some(dataset) = self.controller.dataset_at(primary) else {
             return "Open or drop an MRTKLIB text solution file".into();
         };
         let index = self.hovered.or(self.selected);
-        let Some(s) =
-            index.and_then(|index| self.controller.samples.iter().find(|s| s.index == index))
-        else {
+        let Some(s) = index.and_then(|index| {
+            self.controller.all_samples[primary]
+                .iter()
+                .find(|s| s.index == index)
+        }) else {
             return "No epochs match the quality selection".into();
         };
         let o = &self.controller.settings.options;
@@ -547,7 +608,8 @@ impl PlotApp {
             _ => format!("E={:.4} N={:.4} U={:.4} m", s.enu[0], s.enu[1], s.enu[2]),
         };
         format!(
-            "{} {}   {values}   Q={} {}",
+            "[{}] {} {}   {values}   Q={} {}",
+            primary + 1,
             time::format(p.time, o.week_time, true),
             dataset.time_system,
             p.quality,
@@ -555,15 +617,39 @@ impl PlotApp {
         )
     }
     fn summary(&self) -> String {
-        let Some(d) = &self.controller.dataset else {
+        if !self.controller.selection.difference
+            && !self.controller.selection.data.iter().any(|s| *s)
+        {
+            return String::new();
+        }
+        if self
+            .controller
+            .combination_error(self.controller.selection)
+            .is_some()
+        {
+            return String::new();
+        }
+        let primary = self.controller.selection.primary();
+        let Some(d) = self.controller.dataset_at(primary) else {
             return String::new();
         };
         let mut counts = [0; 8];
-        for p in &d.points {
+        let difference;
+        let samples = if self.controller.selection.difference {
+            difference = data::difference(
+                &self.controller.all_samples[0],
+                &self.controller.all_samples[1],
+                0,
+            );
+            &difference
+        } else {
+            &self.controller.all_samples[primary]
+        };
+        for p in samples {
             counts[usize::from(p.quality)] += 1;
         }
-        let n = d.points.len();
-        let range = if let (Some(start), Some(end)) = (d.points.first(), d.points.last()) {
+        let n = samples.len();
+        let range = if let (Some(start), Some(end)) = (samples.first(), samples.last()) {
             format!(
                 "{} – {} {}",
                 time::format(start.time, self.controller.settings.options.week_time, true),
@@ -573,7 +659,31 @@ impl PlotApp {
         } else {
             "No valid epochs".into()
         };
-        let mut text = format!("{range}   N={n}   Malformed lines={}", d.malformed);
+        let mut text = format!(
+            "[{}] {range}   N={n}   Malformed lines={}",
+            primary + 1,
+            d.malformed
+        );
+        let baselines: Vec<_> = d
+            .points
+            .iter()
+            .map(|p| {
+                let r = if d.relative {
+                    p.position
+                } else {
+                    std::array::from_fn(|i| p.position[i] - d.base.unwrap_or(p.position)[i])
+                };
+                r.iter().map(|v| v * v).sum::<f64>().sqrt()
+            })
+            .collect();
+        if let Some(min) = baselines.iter().copied().reduce(f64::min) {
+            let max = baselines.iter().copied().reduce(f64::max).unwrap();
+            if min + 100.0 < max {
+                text.push_str(&format!("   B={:.1}–{:.1} km", min / 1000.0, max / 1000.0));
+            } else {
+                text.push_str(&format!("   B={:.1} km", min / 1000.0));
+            }
+        }
         for (q, count) in counts.iter().enumerate() {
             if (1..=6).contains(&q) || *count > 0 {
                 text.push_str(&format!(
@@ -590,12 +700,11 @@ impl PlotApp {
         text
     }
     fn graphs(&mut self, ui: &mut egui::Ui) {
-        if self
-            .controller
-            .dataset
-            .as_ref()
-            .is_none_or(|d| d.points.is_empty())
-        {
+        if (0..2).all(|slot| {
+            self.controller
+                .dataset_at(slot)
+                .is_none_or(|d| d.points.is_empty())
+        }) {
             ui.centered_and_justified(|ui| {
                 ui.label(if self.controller.loading {
                     "Loading solution..."
@@ -608,10 +717,13 @@ impl PlotApp {
         let kind = self.controller.settings.plot;
         let enabled = self.controller.settings.components;
         if kind != 2 {
-            let dataset = self.controller.dataset.as_ref().unwrap();
-            if dataset.relative {
+            if self
+                .controller
+                .dataset_at(self.controller.selection.primary())
+                .is_some_and(|d| d.relative)
+            {
                 ui.label("Origin: file ENU baseline");
-            } else if let Ok(origin) = data::origin(dataset, &self.controller.settings.options) {
+            } else if let Ok(origin) = self.controller.origin(&self.controller.settings.options) {
                 ui.label(format!(
                     "Origin: {}   {}",
                     ORIGINS[self.controller.settings.options.origin],
@@ -657,11 +769,8 @@ impl PlotApp {
         let o = &self.controller.settings.options;
         let system = self
             .controller
-            .dataset
-            .as_ref()
-            .unwrap()
-            .time_system
-            .clone();
+            .dataset_at(self.controller.selection.primary())
+            .map_or("", |d| d.time_system.as_str());
         let values: Vec<[f64; 2]> = samples
             .iter()
             .map(|s| coordinates(s, kind, component))
@@ -730,33 +839,48 @@ impl PlotApp {
                 [bounds.x.max, bounds.y.max],
             ));
             pui.add(grid::Grid::new(kind != 0 && !o.week_time));
-            if o.style != 1 {
-                for segment in data::segments(samples, kind != 0) {
-                    pui.line(
-                        Line::new("trajectory", values[segment].to_vec())
+            for source in 0..3 {
+                let start = samples.partition_point(|s| s.source < source);
+                let end = samples.partition_point(|s| s.source <= source);
+                let series = &samples[start..end];
+                let series_values = &values[start..end];
+                if o.style != 1 {
+                    for segment in data::segments(series, kind != 0) {
+                        pui.line(
+                            Line::new(
+                                format!("trajectory {source}"),
+                                series_values[segment].to_vec(),
+                            )
+                            .width(1.0)
+                            .style(line_style(source))
                             .color(Color32::from_gray(192)),
-                    );
+                        );
+                    }
+                }
+                if o.style != 2 {
+                    for quality in 0..=7 {
+                        let points: Vec<_> = series
+                            .iter()
+                            .zip(series_values)
+                            .filter(|(s, _)| s.quality == quality)
+                            .map(|(_, v)| *v)
+                            .collect();
+                        let [r, g, b] = data::mark_color(source, quality);
+                        pui.points(
+                            Points::new(solution_style(quality).0, points)
+                                .radius(o.mark_size as f32 / 2.0)
+                                .color(Color32::from_rgb(r, g, b)),
+                        );
+                    }
                 }
             }
-            if o.style != 2 {
-                for quality in 0..=7 {
-                    let points: Vec<_> = samples
-                        .iter()
-                        .zip(&values)
-                        .filter(|(s, _)| s.quality == quality)
-                        .map(|(_, v)| *v)
-                        .collect();
-                    let [r, g, b] = solution_style(quality).1;
-                    pui.points(
-                        Points::new(solution_style(quality).0, points)
-                            .radius(o.mark_size as f32 / 2.0)
-                            .color(Color32::from_rgb(r, g, b)),
-                    );
-                }
-            }
-            if let Some(i) =
-                selected.and_then(|index| samples.iter().position(|s| s.index == index))
-            {
+            if let Some(i) = selected.and_then(|index| {
+                samples.iter().position(|s| {
+                    s.index == index
+                        && (s.source == self.controller.selection.primary()
+                            || self.controller.selection.difference)
+                })
+            }) {
                 pui.points(
                     Points::new("selected epoch", vec![values[i]])
                         .radius((o.mark_size as f32 / 2.0 + 3.0).max(4.0))
@@ -771,6 +895,10 @@ impl PlotApp {
             let nearest = values
                 .iter()
                 .enumerate()
+                .filter(|(i, _)| {
+                    samples[*i].source == self.controller.selection.primary()
+                        || self.controller.selection.difference
+                })
                 .min_by(|(_, a), (_, b)| {
                     let distance = |p: &&[f64; 2]| {
                         let screen = response
@@ -791,21 +919,43 @@ impl PlotApp {
             }
         }
         if o.statistics && kind != 2 {
-            let overlay = if kind == 0 {
-                let enu: Vec<_> = samples.iter().map(|s| s.enu).collect();
-                let mut text = format!("2D={:.4} m", horizontal_2d(&enu));
-                for (i, label) in ["E", "N", "U"].iter().enumerate() {
-                    let s = statistics(&enu.iter().map(|p| p[i]).collect::<Vec<_>>());
-                    text.push_str(&format!(
-                        "\n{label} AVE={:.4} STD={:.4} RMS={:.4} m",
-                        s.average, s.std, s.rms
-                    ));
+            let mut overlays = Vec::new();
+            for source in 0..3 {
+                let enu: Vec<_> = samples
+                    .iter()
+                    .filter(|s| s.source == source)
+                    .map(|s| s.enu)
+                    .collect();
+                if enu.is_empty() {
+                    continue;
                 }
-                text
-            } else {
-                let s = statistics(&samples.iter().map(|s| s.enu[component]).collect::<Vec<_>>());
-                format!("AVE={:.4}  STD={:.4}  RMS={:.4} m", s.average, s.std, s.rms)
-            };
+                let label = if source == 2 {
+                    "1-2"
+                } else if source == 0 {
+                    "1"
+                } else {
+                    "2"
+                };
+                let overlay = if kind == 0 {
+                    let mut text = format!("[{label}] 2D={:.4} m", horizontal_2d(&enu));
+                    for (i, label) in ["E", "N", "U"].iter().enumerate() {
+                        let s = statistics(&enu.iter().map(|p| p[i]).collect::<Vec<_>>());
+                        text.push_str(&format!(
+                            "\n{label} AVE={:.4} STD={:.4} RMS={:.4} m",
+                            s.average, s.std, s.rms
+                        ));
+                    }
+                    text
+                } else {
+                    let s = statistics(&enu.iter().map(|p| p[component]).collect::<Vec<_>>());
+                    format!(
+                        "[{label}] AVE={:.4}  STD={:.4}  RMS={:.4} m",
+                        s.average, s.std, s.rms
+                    )
+                };
+                overlays.push(overlay);
+            }
+            let overlay = overlays.join("\n\n");
             let rect = response.transform.frame();
             ui.painter().text(
                 rect.left_top() + egui::vec2(8.0, 6.0),
@@ -826,9 +976,17 @@ impl PlotApp {
             if self.controller.loading {
                 ui.label("Loading solution...");
             }
-            if let Some(d) = &self.controller.dataset {
-                for warning in &d.warnings {
-                    ui.colored_label(Color32::DARK_RED, mask(warning, &[]));
+            for slot in 0..2 {
+                if let Some(d) = self.controller.dataset_at(slot) {
+                    for warning in &d.warnings {
+                        ui.colored_label(
+                            Color32::DARK_RED,
+                            mask(&format!("[{}] {warning}", slot + 1), &[]),
+                        );
+                    }
+                    if slot != self.controller.selection.primary() && d.malformed > 0 {
+                        ui.label(format!("[{}] Malformed lines={}", slot + 1, d.malformed));
+                    }
                 }
             }
             ui.label(self.epoch_text());
@@ -845,6 +1003,13 @@ impl PlotApp {
             ui.ctx().request_repaint();
         }
         self.options_dialog(ui.ctx());
+    }
+}
+fn line_style(source: usize) -> LineStyle {
+    if source == 1 {
+        LineStyle::Dashed { length: 1.0 }
+    } else {
+        LineStyle::Solid
     }
 }
 fn origin_range_label(range: f64) -> String {
