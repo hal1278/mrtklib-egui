@@ -1,6 +1,9 @@
 //! Review images use the native drawing path, shared fonts and style; no processes.
 use super::*;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use std::path::PathBuf;
 fn harness(plot: usize) -> Harness<'static, PlotApp> {
     let dataset = std::env::var_os("MRTKLIB_EGUI_TEST_MRTKLIB_DIR")
@@ -70,6 +73,14 @@ fn snapshot_options() {
     save(&mut h, "snapshot_plot_options");
 }
 #[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_origin_range_list() {
+    let mut h = harness(0);
+    h.get_by_label("5m...").click();
+    h.run();
+    save(&mut h, "snapshot_plot_origin_range_list");
+}
+#[test]
 fn options_cancel_and_validation_preserve_settings() {
     let mut h = harness(0);
     h.get_by_label("Options").click();
@@ -132,6 +143,114 @@ fn every_combo_exposes_its_last_choice_without_scrolling() {
     assert_eq!(o.style, 2);
     assert_eq!(o.mark_size, 20);
     assert_eq!(o.origin, 5);
+}
+
+fn select_range(h: &mut Harness<'_, PlotApp>, current: &str, next: &str) {
+    h.get_by_label(&format!("{current}...")).click();
+    h.run();
+    h.get_by_label(next).click();
+    h.run();
+}
+#[test]
+fn range_list_centres_immediately_and_shares_the_options_value() {
+    for kind in [0, 1] {
+        let mut h = harness(kind);
+        let time = h.state().viewport.time;
+        select_range(&mut h, "5m", "1000km");
+        assert_eq!(h.state().controller.settings.options.y_range, 1_000_000.0);
+        select_range(&mut h, "1000km", "5cm");
+        assert_eq!(h.state().controller.settings.options.y_range, 0.05);
+        assert_eq!(h.state().viewport.time, time);
+        if kind == 0 {
+            let bounds = h.state().viewport.track;
+            let frame = h.state().geometry.unwrap().frames[0].unwrap();
+            assert_eq!(bounds.x.center(), 0.0);
+            assert_eq!(bounds.y.center(), 0.0);
+            assert!((bounds.y.span() - 0.1).abs() < 1e-9);
+            assert!(
+                (bounds.x.span() / f64::from(frame.width())
+                    - bounds.y.span() / f64::from(frame.height()))
+                .abs()
+                    < 1e-9
+            );
+        } else {
+            assert_eq!(h.state().viewport.vertical, [Range::new(-0.05, 0.05); 3]);
+        }
+        h.get_by_label("Options").click();
+        h.run();
+        h.get_by_label("Options...").click();
+        h.run();
+        assert_eq!(h.state().options.as_ref().unwrap().y_range, 0.05);
+        h.state_mut().options.as_mut().unwrap().y_range = 0.075;
+        h.get_by_label("OK").click();
+        h.run();
+        // A custom Options value remains exact; the list doesn't snap it to a preset.
+        select_range(&mut h, "0.075m", "2m");
+        assert_eq!(h.state().controller.settings.options.y_range, 2.0);
+        // Choosing the already-selected item still centres the view.
+        if kind == 0 {
+            h.state_mut().viewport.track.x = Range::new(10.0, 20.0);
+        } else {
+            h.state_mut().viewport.vertical = [Range::new(10.0, 20.0); 3];
+        }
+        select_range(&mut h, "2m", "2m");
+        if kind == 0 {
+            assert_eq!(h.state().viewport.track.x.center(), 0.0);
+        } else {
+            assert_eq!(h.state().viewport.vertical, [Range::new(-2.0, 2.0); 3]);
+        }
+    }
+    let h = harness(2);
+    assert!(h.get_by_label("5m...").accesskit_node().is_disabled());
+}
+
+#[test]
+fn wheel_hit_testing_recognises_each_time_label_band() {
+    let geometry = Geometry {
+        kind: 1,
+        canvas: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(300.0, 600.0)),
+        frames: std::array::from_fn(|i| {
+            let top = 20.0 + i as f32 * 200.0;
+            Some(egui::Rect::from_min_max(
+                egui::pos2(50.0, top),
+                egui::pos2(290.0, top + 130.0),
+            ))
+        }),
+    };
+    for i in 0..3 {
+        let frame = geometry.frames[i].unwrap();
+        let label = egui::pos2(frame.center().x, frame.bottom() + 20.0);
+        assert_eq!(geometry.wheel_area(label), Area::Time);
+        assert_eq!(geometry.wheel_area(frame.center()), Area::Graph(i));
+        assert_eq!(
+            geometry.wheel_area(egui::pos2(10.0, frame.center().y)),
+            Area::Left(i)
+        );
+        assert_eq!(
+            geometry.wheel_area(egui::pos2(10.0, label.y)),
+            Area::Outside
+        );
+        // The requested deviation concerns the wheel, not drag/double-click mapping.
+        assert_eq!(
+            geometry.area(label),
+            if i == 2 { Area::Time } else { Area::Outside }
+        );
+    }
+    assert_eq!(geometry.wheel_area(egui::pos2(150.0, 10.0)), Area::Outside);
+    assert_eq!(geometry.wheel_area(egui::pos2(150.0, 610.0)), Area::Outside);
+    let hidden_middle = Geometry {
+        frames: [geometry.frames[0], None, geometry.frames[2]],
+        ..geometry
+    };
+    assert_eq!(
+        hidden_middle.wheel_area(egui::pos2(150.0, 170.0)),
+        Area::Time
+    );
+    let track = Geometry {
+        kind: 0,
+        ..geometry
+    };
+    assert_eq!(track.wheel_area(egui::pos2(150.0, 170.0)), Area::Graph(0));
 }
 
 #[test]
@@ -205,13 +324,31 @@ fn wheel_zooms_track_about_its_centre_and_time_panels_by_area_with_shared_time()
     assert!(
         (h.state().viewport.vertical[1].span() / before.vertical[1].span() - factor).abs() < 1e-8
     );
-    let g = h.state().geometry.unwrap();
-    let frame = g.frames[2].unwrap();
-    let point = egui::pos2(frame.center().x, (frame.bottom() + g.canvas.bottom()) / 2.0);
-    let before = h.state().viewport.clone();
-    wheel_at(&mut h, point, egui::Modifiers::NONE);
-    assert!((h.state().viewport.time.span() / before.time.span() - factor).abs() < 1e-8);
-    assert_eq!(h.state().viewport.vertical, before.vertical);
+    for kind in [1, 2] {
+        let mut h = harness(kind);
+        for components in [[true; 3], [true, false, true], [false, true, false]] {
+            h.state_mut().controller.settings.components = components;
+            h.run();
+            for i in 0..3 {
+                let g = h.state().geometry.unwrap();
+                let Some(frame) = g.frames[i] else { continue };
+                let bottom = g.frames[i + 1..]
+                    .iter()
+                    .flatten()
+                    .next()
+                    .map_or(g.canvas.bottom(), |next| next.top());
+                let point = egui::pos2(frame.center().x, (frame.bottom() + bottom) / 2.0);
+                let before = h.state().viewport.clone();
+                wheel_at(&mut h, point, egui::Modifiers::NONE);
+                assert!(
+                    (h.state().viewport.time.span() / before.time.span() - factor).abs() < 1e-8,
+                    "time labels of panel {i} in plot {kind} did not zoom shared time"
+                );
+                assert!((h.state().viewport.time.center() - before.time.center()).abs() < 1e-8);
+                assert_eq!(h.state().viewport.vertical, before.vertical);
+            }
+        }
+    }
 }
 
 #[test]

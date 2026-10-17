@@ -4,7 +4,7 @@ use crate::{
     data::{self, Sample},
     grid,
     navigation::{self, Area, Bounds, DragMode, Range, Target as ViewTarget, Viewport},
-    settings::{ORIGINS, Options, PLOTS, SIZES},
+    settings::{ORIGIN_RANGES, ORIGINS, Options, PLOTS, SIZES},
     time,
 };
 use eframe::egui::{self, Color32};
@@ -34,6 +34,26 @@ struct Geometry {
     frames: [Option<egui::Rect>; 3],
 }
 impl Geometry {
+    fn wheel_area(self, point: egui::Pos2) -> Area {
+        let area = self.area(point);
+        if area != Area::Outside || !self.canvas.contains(point) {
+            return area;
+        }
+        // Each panel has time labels below its frame. Extend only the wheel
+        // mapping to these bands; RTKPLOT's drag/double-click areas stay intact.
+        if let Some(frame) = self
+            .frames
+            .iter()
+            .flatten()
+            .rev()
+            .find(|frame| point.y > frame.bottom())
+            && (frame.left()..=frame.right()).contains(&point.x)
+        {
+            Area::Time
+        } else {
+            Area::Outside
+        }
+    }
     fn area(self, point: egui::Pos2) -> Area {
         if !self.canvas.contains(point) {
             return Area::Outside;
@@ -175,6 +195,11 @@ impl PlotApp {
             Area::Outside
         };
         let track = geometry.kind == 0;
+        let wheel_area = if active_layer {
+            geometry.wheel_area(point)
+        } else {
+            Area::Outside
+        };
         let line_speed = ui
             .ctx()
             .options(|o| o.input_options.line_scroll_speed.max(1.0));
@@ -183,7 +208,7 @@ impl PlotApp {
             .any(|event| matches!(event, egui::Event::PointerMoved(_)));
         for event in events {
             if let egui::Event::MouseWheel { unit, delta, .. } = event
-                && let Some(target) = navigation::wheel_target(track, area)
+                && let Some(target) = navigation::wheel_target(track, wheel_area)
             {
                 let rect = geometry.frame(target);
                 let pixels = [
@@ -363,6 +388,27 @@ impl PlotApp {
                     self.controller.settings.options.y_range,
                 );
             }
+            ui.add_enabled_ui(self.controller.settings.plot != 2, |ui| {
+                let range = self.controller.settings.options.y_range;
+                let text = origin_range_label(range);
+                let button = ui
+                    .add(egui::Button::new(format!("{text}...")).min_size(egui::vec2(70.0, 0.0)))
+                    .on_hover_text("Center Origin range");
+                // A plain popup has no ScrollArea: RTKPLOT shows the entire list.
+                egui::Popup::menu(&button)
+                    .width(button.rect.width())
+                    .show(|ui| {
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            for (label, metres) in ORIGIN_RANGES {
+                                if ui.selectable_label(range == metres, label).clicked() {
+                                    self.controller.settings.options.y_range = metres;
+                                    self.viewport
+                                        .center_origin(self.controller.settings.plot, metres);
+                                }
+                            }
+                        });
+                    });
+            });
             if before != self.controller.settings {
                 if before.quality != self.controller.settings.quality {
                     self.controller.rebuild();
@@ -800,6 +846,12 @@ impl PlotApp {
         }
         self.options_dialog(ui.ctx());
     }
+}
+fn origin_range_label(range: f64) -> String {
+    ORIGIN_RANGES
+        .iter()
+        .find(|(_, metres)| *metres == range)
+        .map_or_else(|| format!("{range}m"), |(label, _)| (*label).into())
 }
 impl eframe::App for PlotApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

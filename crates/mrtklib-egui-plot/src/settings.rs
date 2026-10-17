@@ -12,6 +12,32 @@ pub(crate) const ORIGINS: [&str; 6] = [
     "Lat/Lon/Hgt",
 ];
 pub(crate) const SIZES: [u32; 8] = [1, 2, 3, 4, 5, 10, 15, 20];
+/// RTKPLOT's RangeList labels and YRange values in metres.
+pub(crate) const ORIGIN_RANGES: [(&str, f64); 23] = [
+    ("5cm", 0.05),
+    ("10cm", 0.1),
+    ("20cm", 0.2),
+    ("50cm", 0.5),
+    ("1m", 1.0),
+    ("2m", 2.0),
+    ("5m", 5.0),
+    ("10m", 10.0),
+    ("20m", 20.0),
+    ("50m", 50.0),
+    ("100m", 100.0),
+    ("200m", 200.0),
+    ("500m", 500.0),
+    ("1km", 1_000.0),
+    ("2km", 2_000.0),
+    ("5km", 5_000.0),
+    ("10km", 10_000.0),
+    ("20km", 20_000.0),
+    ("50km", 50_000.0),
+    ("100km", 100_000.0),
+    ("200km", 200_000.0),
+    ("500km", 500_000.0),
+    ("1000km", 1_000_000.0),
+];
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct Options {
@@ -113,6 +139,22 @@ pub(crate) fn save(path: &Path, settings: &Settings) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn origin_range_units_and_order() {
+        assert_eq!(ORIGIN_RANGES.first(), Some(&("5cm", 0.05)));
+        assert_eq!(ORIGIN_RANGES.last(), Some(&("1000km", 1_000_000.0)));
+        for (label, metres) in ORIGIN_RANGES {
+            let (number, unit) = label.split_at(label.find(|c: char| !c.is_ascii_digit()).unwrap());
+            let scale = match unit {
+                "cm" => 0.01,
+                "m" => 1.0,
+                "km" => 1_000.0,
+                _ => panic!("unknown range unit: {unit}"),
+            };
+            assert_eq!(number.parse::<f64>().unwrap() * scale, metres);
+        }
+        assert!(ORIGIN_RANGES.windows(2).all(|r| r[0].1 < r[1].1));
+    }
+    #[test]
     fn settings_round_trip_and_errors() {
         let dir = std::env::temp_dir().join(format!(
             "plot-settings-{}",
@@ -130,6 +172,7 @@ mod tests {
                 auto_fit: false,
                 llh: [35.0, 139.0, 10.0],
                 week_time: true,
+                y_range: 0.05,
                 ..Default::default()
             },
             ..Default::default()

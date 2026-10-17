@@ -461,6 +461,24 @@ mod tests {
         assert_eq!(v.vertical, before.vertical);
     }
     #[test]
+    fn origin_presets_center_axes_with_equal_track_scale_and_keep_time() {
+        for (_, range) in crate::settings::ORIGIN_RANGES {
+            let mut v = Viewport {
+                time: Range::new(1000.0, 2000.0),
+                ..Default::default()
+            };
+            v.center_origin(1, range);
+            assert_eq!(v.vertical, [Range::new(-range, range); 3]);
+            v.center_origin(0, range);
+            v.resize_track([800.0, 400.0]);
+            assert_eq!(v.time, Range::new(1000.0, 2000.0));
+            close(v.track.x.center(), 0.0);
+            close(v.track.y.center(), 0.0);
+            close(v.track.x.span(), 4.0 * range);
+            close(v.track.y.span(), 2.0 * range);
+        }
+    }
+    #[test]
     fn auto_fit_and_type_change_follow_source_without_refitting_time() {
         let samples = crate::data::samples(
             &crate::reader::synthetic(),
