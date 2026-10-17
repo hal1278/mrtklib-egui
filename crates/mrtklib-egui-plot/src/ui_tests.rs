@@ -135,8 +135,8 @@ fn every_combo_exposes_its_last_choice_without_scrolling() {
     h.run();
     h.get_by_label("Options...").click();
     h.run();
-    select(&mut h, "h:m:s", "www/ssss");
-    select(&mut h, "www/ssss", "h:m:s");
+    select(&mut h, "h:m:s GPST", "www/ssss");
+    select(&mut h, "www/ssss", "h:m:s UTC");
     select(&mut h, "Degrees", "DMS");
     select(&mut h, "Mark/Line", "Line");
     select(&mut h, "2", "20");

@@ -209,28 +209,12 @@ impl Controller {
             );
         }
     }
-    pub fn combination_error(&self, selection: Selection) -> Option<String> {
-        if !(selection.difference || selection.data == [true, true]) {
-            return None;
-        }
-        let (Some(a), Some(b)) = (&self.dataset, &self.dataset2) else {
-            return None;
-        };
-        (a.time_system != b.time_system).then(|| format!(
-            "Cannot overlay or difference Solution-1 ({}) and Solution-2 ({}): time systems differ; select Data 1 or Data 2 alone",
-            a.time_system, b.time_system
-        ))
-    }
     pub fn toggle(&mut self, button: usize) {
         if button == 2 && !self.difference_available() {
             return;
         }
         let mut next = self.selection;
         next.toggle(button);
-        if let Some(error) = self.combination_error(next) {
-            self.error = Some(error);
-            return;
-        }
         self.selection = next;
         self.error = None;
         self.rebuild();
@@ -280,10 +264,6 @@ impl Controller {
                 return;
             }
         }
-        if let Some(e) = self.combination_error(self.selection) {
-            self.error = Some(e);
-            return;
-        }
         if self.selection.difference {
             if self.settings.plot != 2 {
                 self.samples = data::difference(
@@ -302,6 +282,10 @@ impl Controller {
                 .filter(|s| self.settings.quality == 0 || s.quality == self.settings.quality)
                 .cloned()
                 .collect();
+        }
+        // Plot coordinates are display times, so UTC ticks fall on round UTC times.
+        for s in &mut self.samples {
+            s.time = display_time(s.time, &self.settings.options);
         }
     }
     pub fn apply_options(&mut self, options: Options) -> Result<(), String> {
@@ -364,6 +348,15 @@ impl Controller {
     }
 }
 
+/// Display time for the selected format: GPST, or UTC through the leap-second table.
+pub(crate) fn display_time(gpst: f64, options: &crate::settings::Options) -> f64 {
+    if options.utc && !options.week_time {
+        mrtklib_egui_plotkit::leap::gpst_to_utc(gpst)
+    } else {
+        gpst
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,32 +399,6 @@ mod tests {
                 assert_eq!(s.enu, enu);
                 assert_eq!(s.source, 1);
             }
-        }
-    }
-    #[test]
-    fn mixed_time_systems_refuse_overlay_and_difference_but_allow_either_alone() {
-        for system in ["UTC", "JST"] {
-            let mut c = Controller::fixture(reader::synthetic());
-            let mut second = reader::synthetic();
-            second.time_system = system.into();
-            c.dataset2 = Some(second);
-            for button in [1, 2] {
-                c.toggle(button);
-                assert_eq!(c.selection, Selection::default());
-                let error = c.error.as_ref().unwrap();
-                assert!(error.contains("GPST") && error.contains(system));
-                assert!(c.samples.iter().all(|s| s.source == 0));
-            }
-            c.toggle(0);
-            c.toggle(1);
-            assert!(c.error.is_none());
-            assert!(!c.samples.is_empty());
-            assert!(c.samples.iter().all(|s| s.source == 1));
-            // Opening/reloading can select both: suppress the combined plot too.
-            c.selection.data = [true, true];
-            c.rebuild();
-            assert!(c.samples.is_empty());
-            assert!(c.error.as_ref().unwrap().contains(system));
         }
     }
     #[test]

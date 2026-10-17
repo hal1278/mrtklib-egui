@@ -42,6 +42,8 @@ pub(crate) const ORIGIN_RANGES: [(&str, f64); 23] = [
 #[serde(default)]
 pub(crate) struct Options {
     pub week_time: bool,
+    /// `h:m:s UTC` instead of `h:m:s GPST` when `week_time` is off.
+    pub utc: bool,
     pub auto_fit: bool,
     pub dms: bool,
     pub statistics: bool,
@@ -55,6 +57,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             week_time: false,
+            utc: false,
             auto_fit: true,
             dms: false,
             statistics: false,

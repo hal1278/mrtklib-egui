@@ -183,9 +183,10 @@ impl PlotApp {
         let data = self
             .controller
             .dataset_at(self.controller.selection.primary())?;
+        let o = &self.controller.settings.options;
         Some(Range::new(
-            data.points.first()?.time,
-            data.points.last()?.time,
+            crate::controller::display_time(data.points.first()?.time, o),
+            crate::controller::display_time(data.points.last()?.time, o),
         ))
     }
     fn mouse(&mut self, ui: &egui::Ui) {
@@ -486,9 +487,21 @@ impl PlotApp {
                 .spacing([18.0, 8.0])
                 .show(ui, |ui| {
                     left_label(ui, "Time Format");
-                    let mut value = usize::from(!draft.week_time);
-                    combo(ui, "time format", &mut value, &["www/ssss", "h:m:s"]);
+                    let mut value = if draft.week_time {
+                        0
+                    } else if draft.utc {
+                        2
+                    } else {
+                        1
+                    };
+                    combo(
+                        ui,
+                        "time format",
+                        &mut value,
+                        &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
+                    );
                     draft.week_time = value == 0;
+                    draft.utc = value == 2;
                     ui.end_row();
                     left_label(ui, "Lat/Lon Format");
                     let mut value = usize::from(draft.dms);
@@ -572,13 +585,6 @@ impl PlotApp {
         {
             return String::new();
         }
-        if self
-            .controller
-            .combination_error(self.controller.selection)
-            .is_some()
-        {
-            return String::new();
-        }
         let primary = self.controller.selection.primary();
         let Some(dataset) = self.controller.dataset_at(primary) else {
             return "Open or drop an MRTKLIB text solution file".into();
@@ -610,8 +616,12 @@ impl PlotApp {
         format!(
             "[{}] {} {}   {values}   Q={} {}",
             primary + 1,
-            time::format(p.time, o.week_time, true),
-            dataset.time_system,
+            time::format(
+                crate::controller::display_time(p.time, o),
+                o.week_time,
+                true
+            ),
+            time_label(o),
             p.quality,
             solution_style(p.quality).0
         )
@@ -619,13 +629,6 @@ impl PlotApp {
     fn summary(&self) -> String {
         if !self.controller.selection.difference
             && !self.controller.selection.data.iter().any(|s| *s)
-        {
-            return String::new();
-        }
-        if self
-            .controller
-            .combination_error(self.controller.selection)
-            .is_some()
         {
             return String::new();
         }
@@ -654,7 +657,7 @@ impl PlotApp {
                 "{} – {} {}",
                 time::format(start.time, self.controller.settings.options.week_time, true),
                 time::format(end.time, self.controller.settings.options.week_time, true),
-                d.time_system
+                time_label(&self.controller.settings.options)
             )
         } else {
             "No valid epochs".into()
@@ -770,7 +773,7 @@ impl PlotApp {
         let system = self
             .controller
             .dataset_at(self.controller.selection.primary())
-            .map_or("", |d| d.time_system.as_str());
+            .map_or("", |_| time_label(o));
         let values: Vec<[f64; 2]> = samples
             .iter()
             .map(|s| coordinates(s, kind, component))
@@ -1081,3 +1084,8 @@ fn llh_text(llh: [f64; 3], dms: bool) -> String {
 #[cfg(test)]
 #[path = "ui_tests.rs"]
 mod tests;
+
+/// Name of the displayed time system (data are held in GPST).
+fn time_label(o: &crate::settings::Options) -> &'static str {
+    if o.utc && !o.week_time { "UTC" } else { "GPST" }
+}

@@ -10,7 +10,7 @@ The steps below build the applications from source on Linux, for developers. The
 |---|---|
 | `mrtklib-egui-navi` | Starts and stops `mrtk run` and shows its solution. Settings cannot be edited in the GUI yet. |
 | `mrtklib-egui-conv` | RTKCONV-like conversion window: input/output paths, conversion options, command preview, overwrite confirmation, stderr and exit status, and JSON GUI settings. Abort is unavailable until MRTKLIB has a progress/cancel interface. |
-| `mrtklib-egui-plot` | RTKPLOT-like solution viewer: Gnd Trk, Position and NSat, quality filters, origins, epoch inspection, statistics and JSON GUI settings. Reads two MRTKLIB whitespace text solution files (LLH/XYZ/ENU), independently or overlaid, with time-matched differences for Gnd Trk/Position. Different time systems can be viewed individually. |
+| `mrtklib-egui-plot` | RTKPLOT-like solution viewer: Gnd Trk, Position and NSat, quality filters, origins, epoch inspection, statistics and JSON GUI settings. Reads two MRTKLIB whitespace text solution files (LLH/XYZ/ENU), independently or overlaid, with time-matched differences for Gnd Trk/Position. Times are shown in GPST or UTC; UTC and JST files are converted. |
 | `mrtklib-egui-post` | Empty window. |
 
 Plot runs without `mrtk`: build/run `mrtklib-egui-plot`, then use File → Open Solution-1/2. Data 1 and Data 2 toggle either dataset or both; Data 1-2 shows their matched difference. A dropped solution file targets Solution-2 when Data 2 alone is selected, otherwise Solution-1. Reload and Clear cover both files. GUI settings use the same settings-directory override described below.
