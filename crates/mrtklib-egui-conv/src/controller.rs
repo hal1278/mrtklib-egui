@@ -16,7 +16,7 @@ pub(crate) struct PendingConversion {
 pub(crate) struct Controller {
     pub settings: Settings,
     program: Result<PathBuf, String>,
-    cwd: Result<PathBuf, String>,
+    home: Option<PathBuf>,
     settings_file: Result<PathBuf, String>,
     supervisor: Option<Supervisor>,
     process: Option<State>,
@@ -57,8 +57,7 @@ impl Controller {
             settings,
             program,
             settings_file,
-            cwd: std::env::current_dir()
-                .map_err(|e| format!("cannot resolve current directory: {e}")),
+            home: std::env::home_dir(),
             supervisor: None,
             process: None,
             overwrite: None,
@@ -76,12 +75,12 @@ impl Controller {
     }
 
     #[cfg(test)]
-    pub fn for_ui_tests(settings: Settings, cwd: PathBuf) -> Self {
+    pub fn for_ui_tests(settings: Settings, directory: PathBuf) -> Self {
         let mut controller = Self {
             settings,
-            program: Ok(cwd.join("mrtk")),
-            settings_file: Ok(cwd.join("gui.json")),
-            cwd: Ok(cwd),
+            program: Ok(directory.join("mrtk")),
+            settings_file: Ok(directory.join("gui.json")),
+            home: None,
             supervisor: None,
             process: None,
             overwrite: None,
@@ -103,16 +102,22 @@ impl Controller {
         command::build(
             &self.settings,
             self.program.as_ref().map_err(Clone::clone)?,
-            self.cwd.as_ref().map_err(Clone::clone)?,
+            self.home.as_deref(),
         )
+    }
+
+    pub fn dialog_hint(
+        &self,
+        target: crate::file_dialog::Target,
+        value: &str,
+    ) -> Result<Option<PathBuf>, String> {
+        crate::file_dialog::hint(target, value, &self.settings.input, self.home.as_deref())
     }
 
     pub fn refresh_outputs(&mut self, input_changed: bool) {
         let result = self
-            .cwd
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|cwd| self.settings.refresh_outputs(input_changed, cwd));
+            .settings
+            .refresh_outputs(input_changed, self.home.as_deref());
         if let Err(error) = result {
             self.error = Some(error);
         }
@@ -260,9 +265,8 @@ mod tests {
         fn controller(&self) -> Controller {
             let mut c = Controller::new(|| {});
             c.settings_file = Ok(self.directory.join("gui.json"));
-            c.cwd = Ok(self.directory.clone());
             c.settings = Settings {
-                input: "test.ubx".into(),
+                input: self.directory.join("test.ubx").to_str().unwrap().into(),
                 ..Default::default()
             };
             c.refresh_outputs(true);
@@ -351,9 +355,14 @@ mod tests {
             c.program = Ok(fixture.directory.join("unused-mrtk"));
             c.settings = Settings {
                 input: match case {
-                    0 => "input.obs".into(),
+                    0 => input.to_str().unwrap().into(),
                     1 => input.to_str().unwrap().into(),
-                    _ => "missing/../input.obs".into(),
+                    _ => fixture
+                        .directory
+                        .join("missing/../input.obs")
+                        .to_str()
+                        .unwrap()
+                        .into(),
                 },
                 directory_enabled: true,
                 directory: match case {
@@ -386,7 +395,12 @@ mod tests {
     fn edited_output_alias_of_input_never_starts_a_child() {
         let fixture = Fixture::new();
         let mut c = fixture.controller();
-        c.settings.input = "./input.obs".into();
+        c.settings.input = fixture
+            .directory
+            .join("./input.obs")
+            .to_str()
+            .unwrap()
+            .into();
         c.settings.outputs[0].path = "missing/../input.obs".into();
         c.settings.outputs[0].edited = true;
         c.convert();
@@ -399,6 +413,17 @@ mod tests {
         assert!(c.overwrite.is_none());
         assert!(c.supervisor.is_none());
         assert_eq!(c.settings.outputs[0].path, "missing/../input.obs");
+    }
+
+    #[test]
+    fn relative_input_never_starts_a_child() {
+        let fixture = Fixture::new();
+        let mut c = fixture.controller();
+        c.settings.input = "test.ubx".into();
+        c.convert();
+        assert!(c.error.as_ref().unwrap().contains("absolute path or ~/..."));
+        assert!(c.overwrite.is_none());
+        assert!(c.supervisor.is_none());
     }
 
     #[test]
@@ -461,7 +486,6 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let mut controller = Controller::new(|| {});
         controller.program = Ok(program);
-        controller.cwd = Ok(directory.clone());
         controller.settings_file = Ok(directory.join("gui.json"));
         controller.settings = Settings {
             input: tree

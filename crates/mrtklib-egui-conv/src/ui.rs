@@ -154,7 +154,11 @@ impl Conv {
         }
         if let Some((target, path)) = browse {
             let ctx = ui.ctx().clone();
-            match FileDialog::open(target, &path, move || ctx.request_repaint()) {
+            match self
+                .controller
+                .dialog_hint(target, &path)
+                .and_then(|hint| FileDialog::open(target, hint, move || ctx.request_repaint()))
+            {
                 Ok(dialog) => self.file_dialog = Some(dialog),
                 Err(error) => self.controller.error = Some(error),
             }

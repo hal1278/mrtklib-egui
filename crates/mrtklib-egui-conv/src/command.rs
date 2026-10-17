@@ -1,7 +1,7 @@
 //! Build one argv value for execution and preview; MRTKLIB owns option semantics.
 
 use crate::{
-    naming::{ResolvedPaths, absolute},
+    naming::{ResolvedPaths, normalize_absolute},
     settings::{FORMATS, OUTPUTS, SYSTEMS, Settings},
 };
 use mrtklib_egui_supervisor::CommandLine;
@@ -44,10 +44,10 @@ impl PreparedConversion {
 pub(crate) fn build(
     settings: &Settings,
     program: &Path,
-    cwd: &Path,
+    home: Option<&Path>,
 ) -> Result<PreparedConversion, String> {
     settings.options.validate()?;
-    let resolved = ResolvedPaths::new(settings, cwd)?;
+    let resolved = ResolvedPaths::new(settings, home)?;
     let format = FORMATS
         .get(settings.format)
         .ok_or("invalid input format")?
@@ -141,7 +141,7 @@ pub(crate) fn build(
     args.push(resolved.input.into_os_string());
     Ok(PreparedConversion {
         command: CommandLine {
-            program: absolute(program, cwd)?,
+            program: normalize_absolute(program)?,
             args,
             working_directory: None,
         },
@@ -155,14 +155,18 @@ mod tests {
 
     fn fixture() -> Settings {
         let mut s = Settings {
-            input: "data/input.ubx".into(),
+            input: std::env::temp_dir()
+                .join("data/input.ubx")
+                .to_str()
+                .unwrap()
+                .into(),
             ..Default::default()
         };
-        s.refresh_outputs(true, &std::env::temp_dir()).unwrap();
+        s.refresh_outputs(true, None).unwrap();
         s
     }
     fn argv(s: &Settings) -> Vec<String> {
-        build(s, Path::new("mrtk"), &std::env::temp_dir())
+        build(s, &std::env::temp_dir().join("mrtk"), None)
             .unwrap()
             .command
             .args
@@ -180,7 +184,7 @@ mod tests {
     #[test]
     fn defaults_all_slots_absolute_paths_and_format_mappings() {
         let s = fixture();
-        let command = build(&s, Path::new("mrtk"), &std::env::temp_dir()).unwrap();
+        let command = build(&s, &std::env::temp_dir().join("mrtk"), None).unwrap();
         assert!(command.command.program.is_absolute());
         assert!(command.command.working_directory.is_none());
         let args = argv(&s);
@@ -224,7 +228,7 @@ mod tests {
         assert!(values(&argv(&s), "-mask").is_empty());
         s.options.signal_mask.set_all(false);
         assert!(
-            build(&s, Path::new("mrtk"), &std::env::temp_dir())
+            build(&s, &std::env::temp_dir().join("mrtk"), None)
                 .unwrap_err()
                 .contains("at least one")
         );
@@ -322,7 +326,7 @@ mod tests {
             };
             parts[0] = "cannot/pass".into();
             assert!(
-                build(&s, Path::new("mrtk"), &std::env::temp_dir())
+                build(&s, &std::env::temp_dir().join("mrtk"), None)
                     .unwrap_err()
                     .contains("'/'")
             );
@@ -331,7 +335,7 @@ mod tests {
         s.outputs[0].path.clear();
         s.outputs[0].edited = true;
         assert!(
-            build(&s, Path::new("mrtk"), &std::env::temp_dir())
+            build(&s, &std::env::temp_dir().join("mrtk"), None)
                 .unwrap_err()
                 .contains("OBS output path is empty")
         );
@@ -342,11 +346,47 @@ mod tests {
         let mut s = fixture();
         s.options.rinex2_name = true;
         s.outputs[0].enabled = false;
-        s.refresh_outputs(false, &std::env::temp_dir()).unwrap();
+        s.refresh_outputs(false, None).unwrap();
         let args = argv(&s);
         assert_eq!(values(&args, "-c"), ["0000"]);
         assert_eq!(values(&args, "-o"), [""]);
         assert!(values(&args, "-n")[0].ends_with("%r%n0.%yP"));
+    }
+
+    #[test]
+    fn home_and_input_relative_outputs_reach_preview_and_argv_as_absolute_paths() {
+        let home = std::env::temp_dir().join("conv-command-home");
+        let mut s = Settings {
+            input: "~/data/in.ubx".into(),
+            directory_enabled: true,
+            directory: "~/out/unused/..".into(),
+            ..Default::default()
+        };
+        s.outputs[1].edited = true;
+        s.outputs[1].path = "../custom.nav".into();
+        let prepared = build(&s, &home.join("mrtk"), Some(&home)).unwrap();
+        let args: Vec<_> = prepared
+            .command
+            .args
+            .iter()
+            .map(|arg| arg.to_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            values(&args, "-o"),
+            [home.join("out/in.obs").to_str().unwrap()]
+        );
+        assert_eq!(
+            values(&args, "-n"),
+            [home.join("custom.nav").to_str().unwrap()]
+        );
+        assert_eq!(
+            args.last().unwrap(),
+            home.join("data/in.ubx").to_str().unwrap()
+        );
+        let preview = prepared.command.preview();
+        for path in ["out/in.obs", "custom.nav", "data/in.ubx"] {
+            assert!(preview.contains(home.join(path).to_str().unwrap()));
+        }
     }
 
     #[test]
@@ -361,12 +401,16 @@ mod tests {
         std::fs::write(&input, b"input").unwrap();
         std::fs::write(&output, b"existing").unwrap();
         let mut s = Settings {
-            input: "missing/../input.obs".into(),
+            input: directory
+                .join("missing/../input.obs")
+                .to_str()
+                .unwrap()
+                .into(),
             directory_enabled: true,
             directory: ".".into(),
             ..Default::default()
         };
-        let prepared = build(&s, Path::new("missing/../mrtk"), &directory).unwrap();
+        let prepared = build(&s, &directory.join("missing/../mrtk"), None).unwrap();
         assert_eq!(prepared.command.program, directory.join("mrtk"));
         let preview = prepared.command.preview();
         s.input = "changed.ubx".into();
@@ -396,17 +440,17 @@ mod tests {
         ));
         std::fs::create_dir(&directory).unwrap();
         let mut s = Settings {
-            input: "test.ubx".into(),
+            input: directory.join("test.ubx").to_str().unwrap().into(),
             ..Default::default()
         };
-        s.refresh_outputs(true, &std::env::temp_dir()).unwrap();
+        s.refresh_outputs(true, None).unwrap();
         for name in ["test.obs", "test.nav", "test.gnav", "%r.sbs"] {
             std::fs::write(directory.join(name), b"existing").unwrap();
         }
         s.outputs[8].path = "%r.sbs".into();
         s.outputs[8].edited = true;
         assert_eq!(
-            build(&s, Path::new("mrtk"), &directory)
+            build(&s, &directory.join("mrtk"), None)
                 .unwrap()
                 .existing_outputs()
                 .unwrap(),
@@ -414,7 +458,7 @@ mod tests {
         );
         s.outputs[0].enabled = false;
         assert_eq!(
-            build(&s, Path::new("mrtk"), &directory)
+            build(&s, &directory.join("mrtk"), None)
                 .unwrap()
                 .existing_outputs()
                 .unwrap(),
@@ -424,7 +468,7 @@ mod tests {
         s.outputs[0].path = "unused/.././test.nav".into();
         s.outputs[0].edited = true;
         assert_eq!(
-            build(&s, Path::new("mrtk"), &directory)
+            build(&s, &directory.join("mrtk"), None)
                 .unwrap()
                 .existing_outputs()
                 .unwrap(),

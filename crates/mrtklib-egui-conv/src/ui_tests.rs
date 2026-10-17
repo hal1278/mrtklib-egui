@@ -19,7 +19,12 @@ impl Fixture {
     }
     fn harness(&self) -> Harness<'static, Conv> {
         let settings = Settings {
-            input: "receiver_20080526.ubx".into(),
+            input: self
+                .directory
+                .join("receiver_20080526.ubx")
+                .to_str()
+                .unwrap()
+                .into(),
             ..Default::default()
         };
         let app = Conv::with_controller(Controller::for_ui_tests(settings, self.directory.clone()));
