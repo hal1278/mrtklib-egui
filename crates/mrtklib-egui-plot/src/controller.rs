@@ -20,6 +20,8 @@ pub(crate) struct Controller {
     pub error: Option<String>,
     pub loading: bool,
     pub revision: u64,
+    /// Successful file loads are distinct from sample-only revisions.
+    pub load_revision: u64,
     settings_path: Result<PathBuf, String>,
     settings_readable: bool,
     pending: Option<Receiver<Loaded>>,
@@ -53,6 +55,7 @@ impl Controller {
             error,
             loading: false,
             revision: 0,
+            load_revision: 0,
             settings_path: path,
             settings_readable: readable,
             pending: None,
@@ -112,6 +115,7 @@ impl Controller {
         match result {
             (path, Ok(dataset)) => {
                 self.dataset = Some(dataset);
+                self.load_revision += 1;
                 self.settings.last_file = Some(path);
                 self.error = None;
                 self.rebuild();
@@ -174,6 +178,7 @@ impl Controller {
             error: None,
             loading: false,
             revision: 0,
+            load_revision: 1,
             settings_path: Err("test settings are not saved".into()),
             settings_readable: false,
             pending: None,

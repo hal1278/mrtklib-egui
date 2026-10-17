@@ -16,6 +16,7 @@ pub(crate) const SIZES: [u32; 8] = [1, 2, 3, 4, 5, 10, 15, 20];
 #[serde(default)]
 pub(crate) struct Options {
     pub week_time: bool,
+    pub auto_fit: bool,
     pub dms: bool,
     pub statistics: bool,
     pub style: usize,
@@ -28,6 +29,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             week_time: false,
+            auto_fit: true,
             dms: false,
             statistics: false,
             style: 0,
@@ -125,6 +127,7 @@ mod tests {
             quality: 6,
             options: Options {
                 origin: 5,
+                auto_fit: false,
                 llh: [35.0, 139.0, 10.0],
                 week_time: true,
                 ..Default::default()

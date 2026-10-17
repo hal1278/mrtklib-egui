@@ -2,11 +2,13 @@
 use crate::{
     controller::Controller,
     data::{self, Sample},
+    grid,
+    navigation::{self, Area, Bounds, DragMode, Range, Target as ViewTarget, Viewport},
     settings::{ORIGINS, Options, PLOTS, SIZES},
     time,
 };
 use eframe::egui::{self, Color32};
-use egui_plot::{Line, Plot, PlotPoint, Points};
+use egui_plot::{AxisHints, Line, Plot, PlotBounds, PlotPoint, Points};
 use mrtklib_egui_common::file_dialog::{FileDialog, Target};
 use mrtklib_egui_plotkit::{ecef_to_llh, horizontal_2d, solution_style, statistics};
 use mrtklib_egui_supervisor::mask::mask;
@@ -17,11 +19,66 @@ pub(crate) struct PlotApp {
     dialog: Option<FileDialog>,
     options: Option<Options>,
     options_error: Option<String>,
-    fit: [bool; 2],
-    center: bool,
+    viewport: Viewport,
+    geometry: Option<Geometry>,
+    drag: Option<Drag>,
+    load_revision: u64,
     revision: u64,
     selected: Option<usize>,
     hovered: Option<usize>,
+}
+#[derive(Clone, Copy)]
+struct Geometry {
+    kind: usize,
+    canvas: egui::Rect,
+    frames: [Option<egui::Rect>; 3],
+}
+impl Geometry {
+    fn area(self, point: egui::Pos2) -> Area {
+        if !self.canvas.contains(point) {
+            return Area::Outside;
+        }
+        if self.kind == 0 {
+            return Area::Graph(0);
+        }
+        for (i, frame) in self.frames.iter().enumerate() {
+            let Some(frame) = frame else {
+                continue;
+            };
+            if (frame.top()..=frame.bottom()).contains(&point.y) {
+                return if point.x < frame.left() {
+                    Area::Left(i)
+                } else if point.x > frame.right() {
+                    Area::Right(i)
+                } else {
+                    Area::Graph(i)
+                };
+            }
+        }
+        if let Some(frame) = self.frames.iter().rev().flatten().next()
+            && point.y > frame.bottom()
+            && (frame.left()..=frame.right()).contains(&point.x)
+        {
+            Area::Time
+        } else {
+            Area::Outside
+        }
+    }
+    fn frame(self, target: ViewTarget) -> egui::Rect {
+        let component = match target {
+            ViewTarget::Both(i) | ViewTarget::Vertical(i) => i,
+            _ => self.frames.iter().position(Option::is_some).unwrap_or(0),
+        };
+        self.frames[component].unwrap_or(self.canvas)
+    }
+}
+struct Drag {
+    target: ViewTarget,
+    mode: DragMode,
+    start: egui::Pos2,
+    bounds: Bounds,
+    pixels: [f64; 2],
+    button: egui::PointerButton,
 }
 impl PlotApp {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -34,8 +91,10 @@ impl PlotApp {
             dialog: None,
             options: None,
             options_error: None,
-            fit: [true; 2],
-            center: false,
+            viewport: Viewport::default(),
+            geometry: None,
+            drag: None,
+            load_revision: 0,
             revision: 0,
             selected: None,
             hovered: None,
@@ -70,11 +129,138 @@ impl PlotApp {
         } else if paths.len() > 1 {
             self.controller.error = Some("Open one solution file at a time".into());
         }
+        if self.load_revision != self.controller.load_revision {
+            self.load_revision = self.controller.load_revision;
+            self.viewport.loaded(
+                self.controller.settings.plot,
+                self.controller.settings.options.auto_fit,
+                self.controller.settings.options.y_range,
+                self.time_extent(),
+                &self.controller.samples,
+            );
+        }
         if self.revision != self.controller.revision {
             self.revision = self.controller.revision;
-            self.fit = [true; 2];
             self.selected = self.controller.samples.first().map(|s| s.index);
             self.hovered = None;
+        }
+    }
+    fn time_extent(&self) -> Option<Range> {
+        let data = self.controller.dataset.as_ref()?;
+        Some(Range::new(
+            data.points.first()?.time,
+            data.points.last()?.time,
+        ))
+    }
+    fn mouse(&mut self, ui: &egui::Ui) {
+        let Some(geometry) = self
+            .geometry
+            .filter(|g| g.kind == self.controller.settings.plot)
+        else {
+            return;
+        };
+        if self.options.is_some() || !ui.is_enabled() {
+            self.drag = None;
+            return;
+        }
+        let (pointer, events) = ui.input(|i| (i.pointer.clone(), i.raw.events.clone()));
+        let Some(point) = pointer.latest_pos() else {
+            self.drag = None;
+            return;
+        };
+        let active_layer = ui.ctx().layer_id_at(point) == Some(ui.layer_id());
+        let area = if active_layer {
+            geometry.area(point)
+        } else {
+            Area::Outside
+        };
+        let track = geometry.kind == 0;
+        let line_speed = ui
+            .ctx()
+            .options(|o| o.input_options.line_scroll_speed.max(1.0));
+        let moved = events
+            .iter()
+            .any(|event| matches!(event, egui::Event::PointerMoved(_)));
+        for event in events {
+            if let egui::Event::MouseWheel { unit, delta, .. } = event
+                && let Some(target) = navigation::wheel_target(track, area)
+            {
+                let rect = geometry.frame(target);
+                let pixels = [
+                    f64::from(rect.width().max(1.0)),
+                    f64::from(rect.height().max(1.0)),
+                ];
+                let notches = f64::from(match unit {
+                    egui::MouseWheelUnit::Line => delta.y,
+                    egui::MouseWheelUnit::Point => delta.y / line_speed,
+                    egui::MouseWheelUnit::Page => delta.y * geometry.canvas.height() / line_speed,
+                });
+                self.viewport.wheel(target, notches, pixels);
+            }
+        }
+        for (button, mode) in [
+            (egui::PointerButton::Primary, DragMode::Pan),
+            (egui::PointerButton::Secondary, DragMode::Scale),
+        ] {
+            let start = pointer.press_origin().unwrap_or(point);
+            let start_area = if ui.ctx().layer_id_at(start) == Some(ui.layer_id()) {
+                geometry.area(start)
+            } else {
+                Area::Outside
+            };
+            if pointer.button_pressed(button)
+                && let Some(target) = navigation::drag_target(track, start_area, mode)
+            {
+                let rect = geometry.frame(target);
+                self.drag = Some(Drag {
+                    target,
+                    mode,
+                    start,
+                    bounds: self.viewport.bounds(target),
+                    pixels: [
+                        f64::from(rect.width().max(1.0)),
+                        f64::from(rect.height().max(1.0)),
+                    ],
+                    button,
+                });
+            }
+        }
+        if let Some(drag) = &self.drag {
+            if moved || pointer.button_released(drag.button) {
+                let delta = [
+                    f64::from(point.x - drag.start.x),
+                    f64::from(point.y - drag.start.y),
+                ];
+                let bounds = navigation::drag_bounds(
+                    drag.bounds,
+                    drag.target,
+                    drag.mode,
+                    delta,
+                    drag.pixels,
+                );
+                self.viewport.set_bounds(drag.target, bounds);
+            }
+            if pointer.button_released(drag.button) || !pointer.button_down(drag.button) {
+                self.drag = None;
+            }
+        }
+        if pointer.button_double_clicked(egui::PointerButton::Primary) && area != Area::Outside {
+            let rect = geometry.frame(if track {
+                ViewTarget::Track
+            } else {
+                ViewTarget::Time
+            });
+            let bounds = self.viewport.bounds(if track {
+                ViewTarget::Track
+            } else {
+                ViewTarget::Time
+            });
+            let x =
+                bounds.x.min + f64::from((point.x - rect.left()) / rect.width()) * bounds.x.span();
+            let y = bounds.y.min
+                + f64::from((rect.bottom() - point.y) / rect.height()) * bounds.y.span();
+            self.viewport.double_click(track, [x, y]);
+            self.drag = None;
         }
     }
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -155,20 +341,40 @@ impl PlotApp {
             );
             self.controller.settings.quality = q as u8;
             if ui.button("Fit Horizontal").clicked() {
-                self.fit[0] = true;
+                self.viewport.fit_horizontal(
+                    self.controller.settings.plot,
+                    self.time_extent(),
+                    &self.controller.samples,
+                );
             }
-            if ui.button("Fit Vertical").clicked() {
-                self.fit[1] = true;
+            if self.controller.settings.plot != 2 && ui.button("Fit Vertical").clicked() {
+                self.viewport
+                    .fit_range(self.controller.settings.plot, &self.controller.samples);
             }
-            if ui.button("Center Origin").clicked() {
-                self.center = true;
+            if ui
+                .add_enabled(
+                    self.controller.settings.plot != 2,
+                    egui::Button::new("Center Origin"),
+                )
+                .clicked()
+            {
+                self.viewport.center_origin(
+                    self.controller.settings.plot,
+                    self.controller.settings.options.y_range,
+                );
             }
             if before != self.controller.settings {
                 if before.quality != self.controller.settings.quality {
                     self.controller.rebuild();
                 }
                 if before.plot != self.controller.settings.plot {
-                    self.fit = [true; 2];
+                    self.viewport.plot_type_changed(
+                        self.controller.settings.plot,
+                        self.controller.settings.options.auto_fit,
+                        self.controller.settings.options.y_range,
+                        &self.controller.samples,
+                    );
+                    self.drag = None;
                 }
                 self.controller.persist();
             }
@@ -196,6 +402,11 @@ impl PlotApp {
                     let mut value = usize::from(draft.dms);
                     combo(ui, "lat lon format", &mut value, &["Degrees", "DMS"]);
                     draft.dms = value == 1;
+                    ui.end_row();
+                    left_label(ui, "Auto Fit");
+                    let mut value = usize::from(draft.auto_fit);
+                    combo(ui, "auto fit", &mut value, &["OFF", "ON"]);
+                    draft.auto_fit = value == 1;
                     ui.end_row();
                     left_label(ui, "Show Statistics");
                     ui.checkbox(&mut draft.statistics, "");
@@ -258,7 +469,6 @@ impl PlotApp {
                 Ok(()) => {
                     self.options = None;
                     self.options_error = None;
-                    self.fit = [true; 2];
                 }
                 Err(e) => self.options_error = Some(e),
             }
@@ -334,7 +544,12 @@ impl PlotApp {
         text
     }
     fn graphs(&mut self, ui: &mut egui::Ui) {
-        if self.controller.samples.is_empty() {
+        if self
+            .controller
+            .dataset
+            .as_ref()
+            .is_none_or(|d| d.points.is_empty())
+        {
             ui.centered_and_justified(|ui| {
                 ui.label(if self.controller.loading {
                     "Loading solution..."
@@ -373,13 +588,25 @@ impl PlotApp {
         }
         let height =
             ((ui.available_height() - 6.0 * panels.len() as f32) / panels.len() as f32).max(50.0);
+        self.mouse(ui);
+        let canvas = ui.available_rect_before_wrap();
+        let mut frames = [None; 3];
         for component in panels {
-            self.graph(ui, kind, component, height);
+            frames[component] = Some(self.graph(ui, kind, component, height));
         }
-        self.fit = [false; 2];
-        self.center = false;
+        self.geometry = Some(Geometry {
+            kind,
+            canvas,
+            frames,
+        });
     }
-    fn graph(&mut self, ui: &mut egui::Ui, kind: usize, component: usize, height: f32) {
+    fn graph(
+        &mut self,
+        ui: &mut egui::Ui,
+        kind: usize,
+        component: usize,
+        height: f32,
+    ) -> egui::Rect {
         let samples = &self.controller.samples;
         let o = &self.controller.settings.options;
         let system = self
@@ -402,38 +629,61 @@ impl PlotApp {
         };
         let mut plot = Plot::new(("solution plot", kind, component))
             .height(height)
-            .y_axis_label(y_label)
             .show_background(true)
-            .show_grid(true)
+            .show_grid(false)
+            .allow_scroll(false)
+            .allow_zoom(false)
+            .allow_drag(false)
+            .allow_axis_zoom_drag(false)
+            .allow_boxed_zoom(false)
+            .allow_double_click_reset(false)
+            .auto_bounds(false)
+            .grid_spacing(30.0..=30.0)
+            .custom_x_axes(vec![AxisHints::new_x().label_spacing(0.0..=30.0)])
+            .custom_y_axes(vec![
+                AxisHints::new_y()
+                    .min_thickness(55.0)
+                    .label_spacing(0.0..=30.0),
+            ])
+            .x_grid_spacer(move |input| grid::axis_marks(input, kind != 0 && !o.week_time, true))
+            .y_grid_spacer(move |input| grid::axis_marks(input, false, kind == 0))
+            .y_axis_label(y_label)
+            .y_axis_formatter(|mark, _| grid::number(mark.value, mark.step_size))
             .label_formatter(|_| None);
         if kind == 0 {
-            plot = plot.data_aspect(1.0).x_axis_label("East (m)");
+            plot = plot
+                .x_axis_label("East (m)")
+                .x_axis_formatter(|mark, _| grid::number(mark.value, mark.step_size));
         } else {
             let week = o.week_time;
             plot = plot
                 .x_axis_label(format!("Time ({system})"))
-                .x_axis_formatter(move |mark, _| time::format(mark.value, week, false))
-                .link_axis(egui::Id::new("solution time axes"), [true, false]);
+                .x_axis_formatter(move |mark, _| {
+                    grid::time_label(mark.value, mark.step_size, week)
+                });
         }
-        let fit = self.fit;
-        let center = self.center;
-        let range = o.y_range;
+        let ctx = ui.ctx().clone();
+        let viewport = &mut self.viewport;
         let selected = self.selected;
         let response = plot.show(ui, |pui| {
-            if fit[0] {
-                let (a, b) = extent(values.iter().map(|v| v[0]));
-                pui.set_plot_bounds_x(a..=b);
+            if kind == 0
+                && viewport.resize_track([
+                    f64::from(pui.response().rect.width().max(1.0)),
+                    f64::from(pui.response().rect.height().max(1.0)),
+                ])
+            {
+                ctx.request_repaint();
             }
-            if fit[1] {
-                let (a, b) = extent(values.iter().map(|v| v[1]));
-                pui.set_plot_bounds_y(a..=b);
-            }
-            if center {
-                pui.set_plot_bounds_y(-range..=range);
-                if kind == 0 {
-                    pui.set_plot_bounds_x(-range..=range);
-                }
-            }
+            let bounds = viewport.bounds(if kind == 0 {
+                ViewTarget::Track
+            } else {
+                ViewTarget::Both(component)
+            });
+            pui.set_plot_bounds(PlotBounds::from_min_max(
+                [bounds.x.min, bounds.y.min],
+                [bounds.x.max, bounds.y.max],
+            ));
+            pui.add(grid::Grid::new(kind != 0 && !o.week_time));
             if o.style != 1 {
                 for segment in data::segments(samples, kind != 0) {
                     pui.line(
@@ -519,6 +769,7 @@ impl PlotApp {
                 Color32::BLACK,
             );
         }
+        *response.transform.frame()
     }
     fn draw(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("plot controls").show(ui, |ui| self.controls(ui));
@@ -593,15 +844,7 @@ fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {
         _ => [s.time, s.nsat[component]],
     }
 }
-fn extent(values: impl Iterator<Item = f64>) -> (f64, f64) {
-    let (mut a, mut b) = (f64::INFINITY, f64::NEG_INFINITY);
-    for v in values {
-        a = a.min(v);
-        b = b.max(v);
-    }
-    let padding = ((b - a) * 0.05).max(0.001);
-    (a - padding, b + padding)
-}
+
 fn llh_text(llh: [f64; 3], dms: bool) -> String {
     let angle = |value: f64| {
         if !dms {
