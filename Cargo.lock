@@ -1008,6 +1008,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_plot"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90f3711a5032bb65a41011b23fcdc6c4bb599757b82cc0181d41e7d1de16986a"
+dependencies = [
+ "ahash",
+ "egui",
+ "emath",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2033,6 +2044,9 @@ name = "mrtklib-egui-common"
 version = "0.0.0"
 dependencies = [
  "eframe",
+ "log",
+ "mrtklib-egui-supervisor",
+ "rfd",
  "ttf-parser",
 ]
 
@@ -2046,7 +2060,6 @@ dependencies = [
  "log",
  "mrtklib-egui-common",
  "mrtklib-egui-supervisor",
- "rfd",
  "serde",
  "serde_json",
 ]
@@ -2067,6 +2080,7 @@ dependencies = [
  "eframe",
  "mrtklib-egui-common",
  "mrtklib-egui-mock",
+ "mrtklib-egui-plotkit",
  "mrtklib-egui-rpc",
  "mrtklib-egui-supervisor",
 ]
@@ -2076,8 +2090,19 @@ name = "mrtklib-egui-plot"
 version = "0.0.0"
 dependencies = [
  "eframe",
+ "egui_kittest",
+ "egui_plot",
+ "image",
  "mrtklib-egui-common",
+ "mrtklib-egui-plotkit",
+ "mrtklib-egui-supervisor",
+ "serde",
+ "serde_json",
 ]
+
+[[package]]
+name = "mrtklib-egui-plotkit"
+version = "0.0.0"
 
 [[package]]
 name = "mrtklib-egui-post"

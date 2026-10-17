@@ -1,20 +1,12 @@
-//! RTKPLOT equivalent. Skeleton: an empty window.
-
-use eframe::egui;
+//! RTKPLOT-like viewer for one MRTKLIB text solution file.
+mod controller;
+mod data;
+mod reader;
+mod settings;
+mod time;
+mod ui;
 
 fn main() -> eframe::Result {
-    mrtklib_egui_common::run("mrtklib-egui-plot", [360.0, 120.0], || App)
-}
-
-struct App;
-
-impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.label("RTKPLOT equivalent: not implemented yet.");
-            if ui.button("Exit").clicked() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        });
-    }
+    mrtklib_egui_common::logging::install().map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
+    mrtklib_egui_common::run_with_context("mrtklib-egui-plot", ui::INITIAL_SIZE, ui::PlotApp::new)
 }

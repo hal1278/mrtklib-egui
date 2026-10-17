@@ -8,3 +8,12 @@ publish.workspace = true
 [dependencies]
 eframe.workspace = true
 mrtklib-egui-common.workspace = true
+mrtklib-egui-plotkit.workspace = true
+egui_plot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+mrtklib-egui-supervisor = { path = "../mrtklib-egui-supervisor" }
+
+[dev-dependencies]
+egui_kittest = { version = "=0.36.2", default-features = false, features = ["wgpu"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

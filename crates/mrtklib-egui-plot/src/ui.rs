@@ -1,0 +1,623 @@
+//! RTKPLOT-like controls; file loading and data transformations stay in Controller.
+use crate::{
+    controller::Controller,
+    data::{self, Sample},
+    settings::{ORIGINS, Options, PLOTS, SIZES},
+    time,
+};
+use eframe::egui::{self, Color32};
+use egui_plot::{Line, Plot, PlotPoint, Points};
+use mrtklib_egui_common::file_dialog::{FileDialog, Target};
+use mrtklib_egui_plotkit::{ecef_to_llh, horizontal_2d, solution_style, statistics};
+use mrtklib_egui_supervisor::mask::mask;
+
+pub(crate) const INITIAL_SIZE: [f32; 2] = [1000.0, 760.0];
+pub(crate) struct PlotApp {
+    controller: Controller,
+    dialog: Option<FileDialog>,
+    options: Option<Options>,
+    options_error: Option<String>,
+    fit: [bool; 2],
+    center: bool,
+    revision: u64,
+    selected: Option<usize>,
+    hovered: Option<usize>,
+}
+impl PlotApp {
+    pub fn new(ctx: &egui::Context) -> Self {
+        let ctx = ctx.clone();
+        Self::with_controller(Controller::new(move || ctx.request_repaint()))
+    }
+    fn with_controller(controller: Controller) -> Self {
+        Self {
+            controller,
+            dialog: None,
+            options: None,
+            options_error: None,
+            fit: [true; 2],
+            center: false,
+            revision: 0,
+            selected: None,
+            hovered: None,
+        }
+    }
+    fn update_logic(&mut self, ctx: &egui::Context) {
+        self.controller.poll();
+        if let Some(dialog) = &self.dialog {
+            match dialog.poll() {
+                Ok(Some(selection)) => {
+                    self.dialog = None;
+                    if let Some(path) = selection.path {
+                        self.controller.open(path);
+                    }
+                }
+                Err(e) => {
+                    self.dialog = None;
+                    self.controller.error = Some(e);
+                }
+                Ok(None) => {}
+            }
+        }
+        let paths: Vec<_> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if paths.len() == 1 {
+            self.controller.open(paths[0].clone());
+        } else if paths.len() > 1 {
+            self.controller.error = Some("Open one solution file at a time".into());
+        }
+        if self.revision != self.controller.revision {
+            self.revision = self.controller.revision;
+            self.fit = [true; 2];
+            self.selected = self.controller.samples.first().map(|s| s.index);
+            self.hovered = None;
+        }
+    }
+    fn controls(&mut self, ui: &mut egui::Ui) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                let available = !self.controller.loading && self.dialog.is_none();
+                if ui
+                    .add_enabled(available, egui::Button::new("Open Solution-1..."))
+                    .clicked()
+                {
+                    let ctx = ui.ctx().clone();
+                    match FileDialog::open(
+                        Target::Input,
+                        self.controller.settings.last_file.clone(),
+                        move || ctx.request_repaint(),
+                    ) {
+                        Ok(dialog) => self.dialog = Some(dialog),
+                        Err(e) => self.controller.error = Some(e),
+                    }
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(
+                        available && self.controller.settings.last_file.is_some(),
+                        egui::Button::new("Reload"),
+                    )
+                    .clicked()
+                {
+                    self.controller
+                        .open(self.controller.settings.last_file.clone().unwrap());
+                    ui.close();
+                }
+                if ui.button("Clear").clicked() {
+                    self.controller.clear();
+                    ui.close();
+                }
+            });
+            ui.menu_button("Options", |ui| {
+                if ui
+                    .checkbox(
+                        &mut self.controller.settings.options.statistics,
+                        "Show Statistics",
+                    )
+                    .changed()
+                {
+                    self.controller.persist();
+                }
+                if ui.button("Options...").clicked() {
+                    self.options = Some(self.controller.settings.options.clone());
+                    self.options_error = None;
+                    ui.close();
+                }
+            });
+            if let Some(path) = &self.controller.settings.last_file {
+                ui.label(mask(&path.to_string_lossy(), &[]));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            let before = self.controller.settings.clone();
+            combo(ui, "plot type", &mut self.controller.settings.plot, &PLOTS);
+            ui.add_enabled_ui(self.controller.settings.plot != 0, |ui| {
+                for i in 0..3 {
+                    ui.toggle_value(
+                        &mut self.controller.settings.components[i],
+                        format!("Plot{}", i + 1),
+                    );
+                }
+            });
+            ui.label("Quality");
+            let mut q = usize::from(self.controller.settings.quality);
+            combo(
+                ui,
+                "quality",
+                &mut q,
+                &[
+                    "ALL", "1 FIX", "2 FLOAT", "3 SBAS", "4 DGPS", "5 SINGLE", "6 PPP",
+                ],
+            );
+            self.controller.settings.quality = q as u8;
+            if ui.button("Fit Horizontal").clicked() {
+                self.fit[0] = true;
+            }
+            if ui.button("Fit Vertical").clicked() {
+                self.fit[1] = true;
+            }
+            if ui.button("Center Origin").clicked() {
+                self.center = true;
+            }
+            if before != self.controller.settings {
+                if before.quality != self.controller.settings.quality {
+                    self.controller.rebuild();
+                }
+                if before.plot != self.controller.settings.plot {
+                    self.fit = [true; 2];
+                }
+                self.controller.persist();
+            }
+        });
+    }
+    fn options_dialog(&mut self, ctx: &egui::Context) {
+        let Some(draft) = &mut self.options else {
+            return;
+        };
+        let mut ok = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::new("plot options")).show(ctx, |ui| {
+            ui.set_width(440.0);
+            ui.heading("Options");
+            egui::Grid::new("plot options grid")
+                .num_columns(2)
+                .spacing([18.0, 8.0])
+                .show(ui, |ui| {
+                    left_label(ui, "Time Format");
+                    let mut value = usize::from(!draft.week_time);
+                    combo(ui, "time format", &mut value, &["www/ssss", "h:m:s"]);
+                    draft.week_time = value == 0;
+                    ui.end_row();
+                    left_label(ui, "Lat/Lon Format");
+                    let mut value = usize::from(draft.dms);
+                    combo(ui, "lat lon format", &mut value, &["Degrees", "DMS"]);
+                    draft.dms = value == 1;
+                    ui.end_row();
+                    left_label(ui, "Show Statistics");
+                    ui.checkbox(&mut draft.statistics, "");
+                    ui.end_row();
+                    left_label(ui, "Plot Style");
+                    combo(
+                        ui,
+                        "plot style",
+                        &mut draft.style,
+                        &["Mark/Line", "Mark", "Line"],
+                    );
+                    ui.end_row();
+                    left_label(ui, "Mark Size");
+                    egui::ComboBox::from_id_salt("mark size")
+                        .width(180.0)
+                        .height(400.0)
+                        .selected_text(draft.mark_size.to_string())
+                        .show_ui(ui, |ui| {
+                            for size in SIZES {
+                                ui.selectable_value(&mut draft.mark_size, size, size.to_string());
+                            }
+                        });
+                    ui.end_row();
+                    left_label(ui, "Coordinate Origin");
+                    combo(ui, "coordinate origin", &mut draft.origin, &ORIGINS);
+                    ui.end_row();
+                    for (i, label) in ["Latitude (deg)", "Longitude (deg)", "Height (m)"]
+                        .iter()
+                        .enumerate()
+                    {
+                        left_label(ui, label);
+                        ui.add_enabled(
+                            draft.origin == 5,
+                            egui::DragValue::new(&mut draft.llh[i])
+                                .speed(if i < 2 { 0.000001 } else { 0.1 })
+                                .max_decimals(if i < 2 { 9 } else { 4 }),
+                        );
+                        ui.end_row();
+                    }
+                    left_label(ui, "Center Origin Y-range ±");
+                    ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1));
+                    ui.end_row();
+                });
+            if let Some(e) = &self.options_error {
+                ui.colored_label(Color32::RED, mask(e, &[]));
+            }
+            ui.horizontal(|ui| {
+                ok = ui.button("OK").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if cancel {
+            self.options = None;
+            self.options_error = None;
+        } else if ok {
+            match self
+                .controller
+                .apply_options(self.options.as_ref().unwrap().clone())
+            {
+                Ok(()) => {
+                    self.options = None;
+                    self.options_error = None;
+                    self.fit = [true; 2];
+                }
+                Err(e) => self.options_error = Some(e),
+            }
+        }
+    }
+    fn epoch_text(&self) -> String {
+        let Some(dataset) = &self.controller.dataset else {
+            return "Open or drop an MRTKLIB text solution file".into();
+        };
+        let index = self.hovered.or(self.selected);
+        let Some(s) =
+            index.and_then(|index| self.controller.samples.iter().find(|s| s.index == index))
+        else {
+            return "No epochs match the quality selection".into();
+        };
+        let o = &self.controller.settings.options;
+        let p = &dataset.points[s.index];
+        let values = match self.controller.settings.plot {
+            2 => format!(
+                "NS={}  AGE={:.2} s  RATIO={:.1}",
+                p.satellites, p.age, p.ratio
+            ),
+            0 if !dataset.relative => format!(
+                "{}   E={:.4} N={:.4} U={:.4} m",
+                llh_text(ecef_to_llh(p.position), o.dms),
+                s.enu[0],
+                s.enu[1],
+                s.enu[2]
+            ),
+            _ => format!("E={:.4} N={:.4} U={:.4} m", s.enu[0], s.enu[1], s.enu[2]),
+        };
+        format!(
+            "{} {}   {values}   Q={} {}",
+            time::format(p.time, o.week_time, true),
+            dataset.time_system,
+            p.quality,
+            solution_style(p.quality).0
+        )
+    }
+    fn summary(&self) -> String {
+        let Some(d) = &self.controller.dataset else {
+            return String::new();
+        };
+        let mut counts = [0; 8];
+        for p in &d.points {
+            counts[usize::from(p.quality)] += 1;
+        }
+        let n = d.points.len();
+        let range = if let (Some(start), Some(end)) = (d.points.first(), d.points.last()) {
+            format!(
+                "{} – {} {}",
+                time::format(start.time, self.controller.settings.options.week_time, true),
+                time::format(end.time, self.controller.settings.options.week_time, true),
+                d.time_system
+            )
+        } else {
+            "No valid epochs".into()
+        };
+        let mut text = format!("{range}   N={n}   Malformed lines={}", d.malformed);
+        for (q, count) in counts.iter().enumerate() {
+            if (1..=6).contains(&q) || *count > 0 {
+                text.push_str(&format!(
+                    "   Q{q} {}:{count} ({:.1}%)",
+                    solution_style(q as u8).0,
+                    if n > 0 {
+                        100.0 * *count as f64 / n as f64
+                    } else {
+                        0.0
+                    }
+                ));
+            }
+        }
+        text
+    }
+    fn graphs(&mut self, ui: &mut egui::Ui) {
+        if self.controller.samples.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label(if self.controller.loading {
+                    "Loading solution..."
+                } else {
+                    "No solution epochs to plot"
+                });
+            });
+            return;
+        }
+        let kind = self.controller.settings.plot;
+        let enabled = self.controller.settings.components;
+        if kind != 2 {
+            let dataset = self.controller.dataset.as_ref().unwrap();
+            if dataset.relative {
+                ui.label("Origin: file ENU baseline");
+            } else if let Ok(origin) = data::origin(dataset, &self.controller.settings.options) {
+                ui.label(format!(
+                    "Origin: {}   {}",
+                    ORIGINS[self.controller.settings.options.origin],
+                    llh_text(
+                        ecef_to_llh(origin.position),
+                        self.controller.settings.options.dms
+                    )
+                ));
+            }
+        }
+
+        let panels = if kind == 0 {
+            vec![0]
+        } else {
+            (0..3).filter(|i| enabled[*i]).collect::<Vec<_>>()
+        };
+        if panels.is_empty() {
+            ui.label("Enable Plot1, Plot2 or Plot3 to show a component");
+            return;
+        }
+        let height =
+            ((ui.available_height() - 6.0 * panels.len() as f32) / panels.len() as f32).max(50.0);
+        for component in panels {
+            self.graph(ui, kind, component, height);
+        }
+        self.fit = [false; 2];
+        self.center = false;
+    }
+    fn graph(&mut self, ui: &mut egui::Ui, kind: usize, component: usize, height: f32) {
+        let samples = &self.controller.samples;
+        let o = &self.controller.settings.options;
+        let system = self
+            .controller
+            .dataset
+            .as_ref()
+            .unwrap()
+            .time_system
+            .clone();
+        let values: Vec<[f64; 2]> = samples
+            .iter()
+            .map(|s| coordinates(s, kind, component))
+            .collect();
+        let y_label = if kind == 0 {
+            "North (m)"
+        } else if kind == 1 {
+            ["East (m)", "North (m)", "Up (m)"][component]
+        } else {
+            ["NSat", "Age (s)", "AR ratio"][component]
+        };
+        let mut plot = Plot::new(("solution plot", kind, component))
+            .height(height)
+            .y_axis_label(y_label)
+            .show_background(true)
+            .show_grid(true)
+            .label_formatter(|_| None);
+        if kind == 0 {
+            plot = plot.data_aspect(1.0).x_axis_label("East (m)");
+        } else {
+            let week = o.week_time;
+            plot = plot
+                .x_axis_label(format!("Time ({system})"))
+                .x_axis_formatter(move |mark, _| time::format(mark.value, week, false))
+                .link_axis(egui::Id::new("solution time axes"), [true, false]);
+        }
+        let fit = self.fit;
+        let center = self.center;
+        let range = o.y_range;
+        let selected = self.selected;
+        let response = plot.show(ui, |pui| {
+            if fit[0] {
+                let (a, b) = extent(values.iter().map(|v| v[0]));
+                pui.set_plot_bounds_x(a..=b);
+            }
+            if fit[1] {
+                let (a, b) = extent(values.iter().map(|v| v[1]));
+                pui.set_plot_bounds_y(a..=b);
+            }
+            if center {
+                pui.set_plot_bounds_y(-range..=range);
+                if kind == 0 {
+                    pui.set_plot_bounds_x(-range..=range);
+                }
+            }
+            if o.style != 1 {
+                for segment in data::segments(samples, kind != 0) {
+                    pui.line(
+                        Line::new("trajectory", values[segment].to_vec())
+                            .color(Color32::from_gray(192)),
+                    );
+                }
+            }
+            if o.style != 2 {
+                for quality in 0..=7 {
+                    let points: Vec<_> = samples
+                        .iter()
+                        .zip(&values)
+                        .filter(|(s, _)| s.quality == quality)
+                        .map(|(_, v)| *v)
+                        .collect();
+                    let [r, g, b] = solution_style(quality).1;
+                    pui.points(
+                        Points::new(solution_style(quality).0, points)
+                            .radius(o.mark_size as f32 / 2.0)
+                            .color(Color32::from_rgb(r, g, b)),
+                    );
+                }
+            }
+            if let Some(i) =
+                selected.and_then(|index| samples.iter().position(|s| s.index == index))
+            {
+                pui.points(
+                    Points::new("selected epoch", vec![values[i]])
+                        .radius((o.mark_size as f32 / 2.0 + 3.0).max(4.0))
+                        .filled(false)
+                        .color(Color32::BLACK),
+                );
+            }
+        });
+        if response.response.hovered()
+            && let Some(pointer) = response.response.hover_pos()
+        {
+            let nearest = values
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let distance = |p: &&[f64; 2]| {
+                        let screen = response
+                            .transform
+                            .position_from_point(&PlotPoint::new(p[0], p[1]));
+                        if kind == 0 {
+                            screen.distance_sq(pointer)
+                        } else {
+                            (screen.x - pointer.x).powi(2)
+                        }
+                    };
+                    distance(a).total_cmp(&distance(b))
+                })
+                .map(|(i, _)| samples[i].index);
+            self.hovered = nearest;
+            if response.response.clicked() {
+                self.selected = nearest;
+            }
+        }
+        if o.statistics && kind != 2 {
+            let overlay = if kind == 0 {
+                let enu: Vec<_> = samples.iter().map(|s| s.enu).collect();
+                let mut text = format!("2D={:.4} m", horizontal_2d(&enu));
+                for (i, label) in ["E", "N", "U"].iter().enumerate() {
+                    let s = statistics(&enu.iter().map(|p| p[i]).collect::<Vec<_>>());
+                    text.push_str(&format!(
+                        "\n{label} AVE={:.4} STD={:.4} RMS={:.4} m",
+                        s.average, s.std, s.rms
+                    ));
+                }
+                text
+            } else {
+                let s = statistics(&samples.iter().map(|s| s.enu[component]).collect::<Vec<_>>());
+                format!("AVE={:.4}  STD={:.4}  RMS={:.4} m", s.average, s.std, s.rms)
+            };
+            let rect = response.transform.frame();
+            ui.painter().text(
+                rect.left_top() + egui::vec2(8.0, 6.0),
+                egui::Align2::LEFT_TOP,
+                overlay,
+                egui::FontId::monospace(12.0),
+                Color32::BLACK,
+            );
+        }
+    }
+    fn draw(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("plot controls").show(ui, |ui| self.controls(ui));
+        egui::Panel::bottom("plot status").show(ui, |ui| {
+            if let Some(e) = &self.controller.error {
+                ui.colored_label(Color32::RED, mask(e, &[]));
+            }
+            if self.controller.loading {
+                ui.label("Loading solution...");
+            }
+            if let Some(d) = &self.controller.dataset {
+                for warning in &d.warnings {
+                    ui.colored_label(Color32::DARK_RED, mask(warning, &[]));
+                }
+            }
+            ui.label(self.epoch_text());
+            ui.horizontal_wrapped(|ui| {
+                for part in self.summary().split("   ") {
+                    ui.add(egui::Label::new(part).extend());
+                }
+            });
+        });
+        let previous_hover = self.hovered;
+        self.hovered = None;
+        egui::CentralPanel::default().show(ui, |ui| self.graphs(ui));
+        if previous_hover != self.hovered {
+            ui.ctx().request_repaint();
+        }
+        self.options_dialog(ui.ctx());
+    }
+}
+impl eframe::App for PlotApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.update_logic(ui.ctx());
+        self.draw(ui);
+    }
+    fn on_exit(&mut self) {
+        self.controller.persist();
+        if let Some(e) = &self.controller.error {
+            eprintln!("{}", mask(e, &[]));
+        }
+    }
+}
+fn combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(items[*value])
+        .width(180.0)
+        .height(400.0)
+        .show_ui(ui, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                for (i, label) in items.iter().enumerate() {
+                    ui.selectable_value(value, i, *label);
+                }
+            });
+        });
+}
+fn left_label(ui: &mut egui::Ui, label: &str) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(160.0, 22.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(160.0);
+            ui.label(label);
+        },
+    );
+}
+
+fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {
+    match kind {
+        0 => [s.enu[0], s.enu[1]],
+        1 => [s.time, s.enu[component]],
+        _ => [s.time, s.nsat[component]],
+    }
+}
+fn extent(values: impl Iterator<Item = f64>) -> (f64, f64) {
+    let (mut a, mut b) = (f64::INFINITY, f64::NEG_INFINITY);
+    for v in values {
+        a = a.min(v);
+        b = b.max(v);
+    }
+    let padding = ((b - a) * 0.05).max(0.001);
+    (a - padding, b + padding)
+}
+fn llh_text(llh: [f64; 3], dms: bool) -> String {
+    let angle = |value: f64| {
+        if !dms {
+            return format!("{value:.9}°");
+        }
+        let total = (value.abs() * 3600.0 * 100000.0).round() / 100000.0;
+        format!(
+            "{}{}°{:02}'{:08.5}\"",
+            if value.is_sign_negative() { "-" } else { "" },
+            (total / 3600.0) as u32,
+            ((total % 3600.0) / 60.0) as u32,
+            total % 60.0
+        )
+    };
+    format!("{} {} H={:.4} m", angle(llh[0]), angle(llh[1]), llh[2])
+}
+#[cfg(test)]
+#[path = "ui_tests.rs"]
+mod tests;

@@ -20,3 +20,6 @@ getrandom = "=0.3.4"
 data-encoding = "=2.11.1"
 mrtklib-egui-common = { path = "crates/mrtklib-egui-common" }
 mrtklib-egui-mock = { path = "crates/mrtklib-egui-mock" }
+
+mrtklib-egui-plotkit = { path = "crates/mrtklib-egui-plotkit" }
+egui_plot = "=0.37.0"

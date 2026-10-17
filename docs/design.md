@@ -138,6 +138,21 @@ Each connection starts with an initial synchronization. Events missed while disc
 - Closing during a conversion opens a modal with Wait focused by default and Kill and close. Wait keeps the window and job open. Kill and close warns that output files may be incomplete, explicitly kills the child, then waits asynchronously for exit and bounded output draining before closing. Exit and the window close control use the same path; normal completion never kills the child. The supervisor's existing Drop cleanup still protects against an unexpected application teardown.
 - GUI settings include input, format, time fields, output directory, all output choices/paths and their edited flags, and conversion options. They are JSON in `<settings directory>/<GUI executable file stem>.json`, independent of MRTKLIB TOML. They load at startup and save only on close. Missing files use defaults; unreadable or invalid files print a masked warning on stderr and use defaults without touching the file until close. Settings-path resolution errors prevent conversion; save failures are reported on stderr without a fallback directory. Unknown JSON fields are ignored and omitted fields use defaults; invalid format/version/frequency selections reject the file. Editable argv fields are validated when applying Options or converting, so unfinished edits can round-trip.
 
+## Plot first slice
+
+- `mrtklib-egui-plot` opens one MRTKLIB text solution file through File → Open Solution-1 or a file drop. Reload rereads that file; Clear removes it. File loading and native dialogs run on workers, outside the UI thread. Failed opens retain the current dataset and report the error.
+- Supported coordinates are LLH in decimal degrees or DMS, ECEF XYZ, and relative ENU baseline, with calendar or week/TOW timestamps, LF or CRLF, and whitespace separators. A recognised column heading is mandatory. Its coordinate labels, complete field order, optional velocity suffix and time-system label are validated. Covariance and velocity fields are checked as finite numbers, even though this slice does not draw them. Other separators and NMEA are refused. Every nonempty data line that fails the layout is counted in the status bar.
+- Time stays in the file's GPST, UTC or JST system, labelled on axes and epoch/summary texts. Calendar arithmetic and week/TOW share a continuous seconds axis measured from 1980-01-06 within that system. No leap-second table or time-system conversion is used. The writer gives calendar and week/TOW the same heading labels, with padding that also depends on fractional precision and the separator, so a heading cannot uniquely encode the time format. The first complete valid row resolves the two disjoint timestamp grammars; subsequent rows must use that same format. Invalid rows before resolution are counted too. This exception avoids guessing a format from spacing.
+- The plots are Gnd Trk (East versus North, equal metres on both axes), Position (East, North, Up versus time), and NSat (satellite count, differential age in seconds, AR ratio versus time). Plot1/Plot2/Plot3 independently enable the component panels. Quality is ALL or an exact Q=1…6 filter. Time-series lines break at gaps exceeding 300 seconds; ground-track lines remain connected. Epochs are stably sorted by time, retaining duplicate epochs and every successfully read row.
+- Origins for absolute data are Start Pos, End Pos, Average Pos (default), Linear Fit Pos, Base Station from `% ref pos`, and user Lat/Lon/Hgt. Average Pos averages ECEF coordinates. Linear Fit Pos fits each ECEF component against time and subtracts the moving fitted origin, using its instantaneous latitude/longitude for ENU. It requires distinct epoch times. Relative ENU data pass through for every origin choice. A missing reference position makes Base Station unavailable; it does not silently substitute another origin.
+- WGS84 LLH/ECEF and local ENU are display conversions. The GUI does not read any other GNSS format or compute a positioning solution. `% ref pos` is ECEF for XYZ output and LLH for the other layouts; unreadable reference metadata is reported explicitly. Tokyo-datum coordinates are refused because this slice implements WGS84 display geometry only. A declared geodetic height is used as stored, with an explicit warning that no geoid restoration is performed, matching RTKPLOT’s numerical treatment without hiding its limitation.
+- Fit Horizontal and Fit Vertical fit the filtered data on their respective axes. Center Origin sets the vertical range to ±Y-range (default 5), and both ground-track axes around zero. Mouse pan and zoom use `egui_plot` exactly pinned to 0.37.0. Clicking an epoch selects it; hovering inspects the nearest epoch. The status bar shows epoch time, plotted values and quality, plus the whole dataset's start/end time, epoch count, malformed-line count, and quality counts/percentages independently of the filter.
+- Options offers `www/ssss` or `h:m:s` time text, degrees or DMS coordinate text, Show Statistics (off by default), Mark/Line, Mark or Line style, mark sizes 1/2/3/4/5/10/15/20, origin fields, and Center Origin Y-range. The dialog edits a draft; OK validates and applies it, Cancel discards it. Combo lists show all choices, with left-aligned labels and fields in a grid.
+- Position and ground-track statistics use all filtered samples, independently of the viewport: AVE, sample STD (n−1, zero for a singleton), and RMS about zero. Ground-track `2D` is `2*sqrt(mean(E²+N²))`, following RTKPLOT's label and calculation. NSat has no statistics overlay, as in RTKPLOT. Marks use the shared navi status palette; Q=0 is silver and Q=7 is gray. Connecting lines are silver as in RTKPLOT.
+- GUI settings (last file, plot, components, quality and options) live in `<settings directory>/<executable file stem>.json`, using the shared directory resolver. The last successfully opened file is reopened at launch. An unreadable/invalid settings file is reported, defaults are used visibly, and that file is not overwritten during the session. Save failures are displayed without trying another directory.
+- `mrtklib-egui-plotkit` owns the solution point type, WGS84/ENU display conversions, status labels/colours and statistics. Navi uses its status table without changing its labels or colours. The text reader stays in the plot crate; navi receives solutions through RPC. `mrtklib-egui-common` owns the shared native-dialog worker and diagnostic logger, while conv retains its input/output path hints. Credential-bearing text is masked before display or logging.
+- A second solution, velocity/acceleration plots, `.stat`, observation plots, maps, waypoints, export, animation and live streams are outside this slice.
+
 ## Mock server
 
 - `mrtklib-egui-mock` imitates the `mrtk run` RPC endpoint (protocol 0.1). GUI code and its tests use it for situations that the real server rarely produces (a failed start, lost events, protocol errors).
@@ -232,6 +247,20 @@ MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
 ```
 
 The files are `snapshot_main.png`, `snapshot_options.png`, `snapshot_mask.png` and `snapshot_overwrite.png`. On NixOS, run in the development shell (`nix develop`); its `LD_LIBRARY_PATH` supplies the GPU runtime libraries. These are review artifacts, not pixel-comparison baselines, so platform font differences do not fail normal tests.
+
+Plot's ignored `real_mrtklib_pos_files` test reads both MALIB and MADOCA solution files directly from the supplied MRTKLIB tree, requiring nonempty data, zero malformed lines, and Q=1…6. It does not start a backend or extract/fetch files.
+
+```sh
+MRTKLIB_EGUI_TEST_MRTKLIB_DIR=/path/to/MRTKLIB \
+  cargo test -p mrtklib-egui-plot -- --ignored real_mrtklib_pos_files
+```
+
+Plot's ignored `snapshot_` tests use the same restricted `egui_kittest`/PNG dependencies and shared font/style setup, at its initial 1000 by 760 window size. They draw Gnd Trk, Position, NSat and Options to `snapshot_plot_gnd_trk.png`, `snapshot_plot_position.png`, `snapshot_plot_nsat.png` and `snapshot_plot_options.png`. When `MRTKLIB_EGUI_TEST_MRTKLIB_DIR` supplies the MALIB solution file, it is used; otherwise a small synthetic solution fixture is used. A supplied file that exists but fails to parse fails the test. Plot has no process-launch code, including in its controller or test harness.
+
+```sh
+MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
+  cargo test -p mrtklib-egui-plot -- --ignored snapshot_
+```
 
 ## Platforms
 

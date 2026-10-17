@@ -120,16 +120,17 @@ pub(crate) fn build(
 }
 
 fn solution_style(status: SolutionStatus) -> (&'static str, Color) {
-    match status {
-        SolutionStatus::None => ("----", [192, 192, 192]),
-        SolutionStatus::Fix => ("FIX", [0, 128, 0]),
-        SolutionStatus::Float => ("FLOAT", [255, 170, 0]),
-        SolutionStatus::Sbas => ("SBAS", [255, 0, 255]),
-        SolutionStatus::Dgps => ("DGPS", [0, 0, 255]),
-        SolutionStatus::Single => ("SINGLE", [255, 0, 0]),
-        SolutionStatus::Ppp => ("PPP", [0, 128, 128]),
-        SolutionStatus::Dr => ("DR", GRAY),
-    }
+    let q = match status {
+        SolutionStatus::None => 0,
+        SolutionStatus::Fix => 1,
+        SolutionStatus::Float => 2,
+        SolutionStatus::Sbas => 3,
+        SolutionStatus::Dgps => 4,
+        SolutionStatus::Single => 5,
+        SolutionStatus::Ppp => 6,
+        SolutionStatus::Dr => 7,
+    };
+    mrtklib_egui_plotkit::solution_style(q)
 }
 
 fn status_line(

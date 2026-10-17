@@ -1,0 +1,7 @@
+[package]
+name = "mrtklib-egui-plotkit"
+description = "Solution display conversions and statistics shared by the GUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
