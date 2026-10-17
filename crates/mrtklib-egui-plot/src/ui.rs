@@ -32,6 +32,7 @@ pub(crate) struct PlotApp {
     status_measure: Option<(egui::Painter, egui::FontId)>,
     info_open: bool,
     errors: Vec<String>,
+    rate_drafts: [String; 2],
 }
 #[derive(Clone, Copy)]
 struct Geometry {
@@ -130,6 +131,7 @@ impl PlotApp {
             status_measure: None,
             info_open: false,
             errors: Vec::new(),
+            rate_drafts: Default::default(),
         }
     }
     fn update_logic(&mut self, ctx: &egui::Context) {
@@ -385,18 +387,24 @@ impl PlotApp {
                     / paths.len() as f32;
                 ui.horizontal(|ui| {
                     for (slot, path) in paths {
-                        let full = mask(&path.to_string_lossy(), &[]);
-                        let font = egui::TextStyle::Body.resolve(ui.style());
-                        let measure = |text: &str| {
-                            ui.painter()
-                                .layout_no_wrap(text.into(), font.clone(), Color32::BLACK)
-                                .size()
-                                .x
-                        };
-                        let text = summary::elide_path(&full, width - 25.0, measure);
-                        ui.allocate_ui(
-                            egui::vec2(width, ui.text_style_height(&egui::TextStyle::Body)),
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(width, 22.0),
+                            egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
+                                self.rate_control(ui, slot);
+                                let full = mask(&path.to_string_lossy(), &[]);
+                                let font = egui::TextStyle::Body.resolve(ui.style());
+                                let measure = |text: &str| {
+                                    ui.painter()
+                                        .layout_no_wrap(text.into(), font.clone(), Color32::BLACK)
+                                        .size()
+                                        .x
+                                };
+                                let text = summary::elide_path(
+                                    &full,
+                                    ui.available_width() - 25.0,
+                                    measure,
+                                );
                                 egui::ScrollArea::horizontal()
                                     .id_salt(("file path", slot))
                                     .show(ui, |ui| {
@@ -560,6 +568,81 @@ impl PlotApp {
         });
     }
 
+    fn rate_control(&mut self, ui: &mut egui::Ui, slot: usize) {
+        let text = self.controller.rate(slot).map_or_else(
+            || "—".into(),
+            |hz| {
+                let number = if !(0.0001..1e6).contains(&hz) {
+                    format!("{hz:.5e}")
+                } else {
+                    hz.to_string()
+                };
+                format!(
+                    "{number} Hz{}",
+                    if self.controller.override_hz(slot).is_some() {
+                        " (manual)"
+                    } else {
+                        ""
+                    }
+                )
+            },
+        );
+        let button = ui
+            .add_enabled(!self.controller.loading, egui::Button::new(&text))
+            .on_hover_text("Sample rate: click to override or use estimated");
+        button.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                ui.is_enabled(),
+                format!("Rate {}: {text}", slot + 1),
+            )
+        });
+        if button.clicked() {
+            self.rate_drafts[slot] = self
+                .controller
+                .override_hz(slot)
+                .or_else(|| self.controller.rate(slot))
+                .map(|hz| hz.to_string())
+                .unwrap_or_default();
+        }
+        egui::Popup::menu(&button).show(|ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.label(format!("Solution-{} sample rate", slot + 1));
+                ui.horizontal(|ui| {
+                    let label = ui.label("Hz");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.rate_drafts[slot])
+                            .desired_width(100.0),
+                    )
+                    .labelled_by(label.id);
+                });
+                let hz = self.rate_drafts[slot]
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|hz| hz.is_finite() && *hz > 0.0);
+                if hz.is_none() && !self.rate_drafts[slot].is_empty() {
+                    ui.colored_label(Color32::RED, "Rate must be positive and finite");
+                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(hz.is_some(), egui::Button::new("Apply override"))
+                        .clicked()
+                    {
+                        if let Err(error) = self.controller.set_override_hz(slot, hz) {
+                            self.controller.error = Some(error);
+                        }
+                        ui.close();
+                    }
+                    if ui.button("Use estimated").clicked() {
+                        if let Err(error) = self.controller.set_override_hz(slot, None) {
+                            self.controller.error = Some(error);
+                        }
+                        ui.close();
+                    }
+                });
+            });
+        });
+    }
     fn options_dialog(&mut self, ctx: &egui::Context) {
         let Some(draft) = &mut self.options else {
             return;
@@ -761,13 +844,14 @@ impl PlotApp {
     }
     fn summary(&self) -> String {
         let c = &self.controller;
-        let line = |label, samples: &[Sample], d| {
+        let line = |label, samples: &[Sample], d, override_hz| {
             summary::line(
                 label,
                 samples,
                 d,
                 &c.settings.options,
                 c.settings.interval_percentages,
+                override_hz,
             )
         };
         if c.selection.difference {
@@ -776,6 +860,7 @@ impl PlotApp {
                     "1-2",
                     &data::difference(&c.all_samples[0], &c.all_samples[1], 0),
                     d,
+                    c.override_hz(0),
                 )
             });
         }
@@ -788,6 +873,7 @@ impl PlotApp {
                         source_label(slot),
                         &data::samples_with_origin(d, None, 0),
                         d,
+                        c.override_hz(slot),
                     )
                 })
             })
@@ -819,6 +905,16 @@ impl PlotApp {
                 items.push((true, format!("[{}] {e}", slot + 1)));
             }
             if let Some(d) = self.controller.dataset_at(slot) {
+                if d.duplicates_removed > 0 {
+                    items.push((
+                        false,
+                        format!(
+                            "[{}] Removed duplicate epochs={}",
+                            slot + 1,
+                            d.duplicates_removed
+                        ),
+                    ));
+                }
                 if d.malformed > 0 {
                     items.push((
                         false,

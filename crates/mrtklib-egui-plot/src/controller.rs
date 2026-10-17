@@ -3,6 +3,7 @@ use crate::{
     data,
     reader::{self, Dataset},
     settings::{self, Options, Settings},
+    summary,
 };
 use std::{
     path::PathBuf,
@@ -115,6 +116,38 @@ impl Controller {
         } else {
             self.settings.last_file2.clone()
         }
+    }
+    pub fn override_hz(&self, slot: usize) -> Option<f64> {
+        let path = self.last_file(slot)?;
+        self.settings
+            .manual_rates
+            .iter()
+            .find(|rate| rate.path == path)
+            .map(|rate| rate.hz)
+    }
+    pub fn rate(&self, slot: usize) -> Option<f64> {
+        let data = self.dataset_at(slot)?;
+        if data.points.len() < 2 {
+            return None;
+        }
+        self.override_hz(slot)
+            .or_else(|| summary::rate(data.points.iter().map(|p| p.time_ns)))
+    }
+    pub fn set_override_hz(&mut self, slot: usize, hz: Option<f64>) -> Result<(), String> {
+        if hz.is_some_and(|hz| !hz.is_finite() || hz <= 0.0) {
+            return Err("Rate must be positive and finite".into());
+        }
+        let path = self
+            .last_file(slot)
+            .ok_or("Open a file before setting its rate")?;
+        self.settings.manual_rates.retain(|rate| rate.path != path);
+        if let Some(hz) = hz {
+            self.settings
+                .manual_rates
+                .push(settings::ManualRate { path, hz });
+        }
+        self.persist();
+        Ok(())
     }
     pub fn open(&mut self, slot: usize, path: PathBuf) {
         self.start_read(vec![(slot, path)]);

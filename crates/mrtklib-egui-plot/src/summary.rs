@@ -1,13 +1,13 @@
 //! rtktrace rate/interval statistics and RTKPLOT baseline display (see design.md).
 use crate::{controller::display_time, data::Sample, reader::Dataset, settings::Options, time};
 
-/// rtktrace src/analysis/sample_rate.cpp:8–29; strict >5 ms threshold.
+/// rtktrace shortest interval; see the Plot rate rule in docs/design.md (>=1 ms).
 pub(crate) fn rate(times: impl IntoIterator<Item = i128>) -> Option<f64> {
     let times: Vec<_> = times.into_iter().collect();
     times
         .windows(2)
         .map(|w| w[1] - w[0])
-        .filter(|dt| *dt > 5_000_000)
+        .filter(|dt| *dt >= 1_000_000)
         .min()
         .map(|dt| 1e9 / dt as f64)
 }
@@ -64,6 +64,7 @@ pub(crate) fn line(
     dataset: &Dataset,
     options: &Options,
     interval: bool,
+    override_hz: Option<f64>,
 ) -> String {
     let mut counts = [0usize; 8];
     for s in samples {
@@ -89,19 +90,17 @@ pub(crate) fn line(
         baseline(dataset)
     );
     let denominator = if interval {
-        expected(
-            start.time_ns,
-            end.time_ns,
-            rate(samples.iter().map(|s| s.time_ns)),
-        )
-        .unwrap_or(0)
+        let hz = (samples.len() > 1)
+            .then(|| override_hz.or_else(|| rate(samples.iter().map(|s| s.time_ns))))
+            .flatten();
+        expected(start.time_ns, end.time_ns, hz)
     } else {
-        samples.len()
+        Some(samples.len())
     };
     for (q, count) in counts.into_iter().enumerate().filter(|(_, n)| *n > 0) {
-        match percentage(count, denominator) {
-            Some(pct) => text.push_str(&format!("  Q{q}={count} ({pct:.1}%)")),
-            None => text.push_str(&format!("  Q{q}={count} (unavailable)")),
+        text.push_str(&format!("  Q{q}={count}"));
+        if let Some(pct) = denominator.and_then(|n| percentage(count, n)) {
+            text.push_str(&format!(" ({pct:.1}%)"));
         }
     }
     text
@@ -139,12 +138,30 @@ mod tests {
     fn rtktrace_rate_threshold_duplicates_and_gaps() {
         assert_eq!(rate([]), None);
         assert_eq!(rate([1_000_000_000]), None);
-        assert_eq!(rate([0, 5_000_000, 5_000_000, 4_000_000]), None);
-        assert_eq!(rate([0, 5_000_000, 15_000_000, 1_015_000_000]), Some(100.0));
+        assert_eq!(rate([0, 5_000_000, 5_000_000, 4_000_000]), Some(200.0));
+        assert_eq!(rate([0, 5_000_000, 15_000_000, 1_015_000_000]), Some(200.0));
         assert_eq!(
             rate([0, 1_000_000_000, 4_000_000_000, 5_000_000_000]),
             Some(1.0)
         );
+    }
+    #[test]
+    fn shortest_interval_estimate_includes_one_ms_and_manual_rate_overrides_it() {
+        assert_eq!(rate([0, 1_000_000]), Some(1000.0));
+        assert_eq!(rate([0, 999_999]), None);
+        assert_eq!(rate([0, 999_999, 1_999_999]), Some(1000.0));
+        assert_eq!(rate([0, 5_000_000]), Some(200.0));
+        assert_eq!(rate([0, 1_000_000_000, 3_000_000_000]), Some(1.0));
+        assert_eq!(rate([0, 10_000_000, 1_000_000_000]), Some(100.0));
+        assert_eq!(rate([0]), None);
+        let mut d = crate::reader::synthetic();
+        d.points.truncate(3);
+        let samples = crate::data::samples_with_origin(&d, None, 0);
+        assert!(
+            line("1", &samples, &d, &Options::default(), true, Some(2.0)).contains("Q1=1 (20.0%)")
+        );
+        assert!(line("1", &samples, &d, &Options::default(), true, None).contains("Q1=1 (33.3%)"));
+        assert!(!line("1", &samples[..1], &d, &Options::default(), true, Some(2.0)).contains('%'));
     }
     #[test]
     fn expected_interval_percentages_do_not_clamp_duplicates() {
@@ -182,7 +199,7 @@ mod tests {
                 week_time,
                 ..Default::default()
             };
-            let text = line("1", &samples, &d, &options, false);
+            let text = line("1", &samples, &d, &options, false, None);
             assert!(text.starts_with(&format!("[1] {expected}  N=2")), "{text}");
         }
         assert_eq!(

@@ -324,6 +324,7 @@ mod tests {
             relative: false,
             time_system: "GPST".into(),
             malformed: 0,
+            duplicates_removed: 0,
             warnings: vec![],
         }
     }

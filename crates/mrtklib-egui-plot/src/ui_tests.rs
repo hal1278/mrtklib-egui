@@ -818,9 +818,23 @@ fn snapshot_two_dataset_status() {
         "/a/long/directory/for/the/first/solution/complete-first-solution-filename.pos".into(),
     );
     c.settings.last_file2 = Some("/another/long/directory/second-solution-filename.pos".into());
+    c.set_override_hz(0, Some(1.0)).unwrap();
     let mut h = harness_with_controller(c);
     hover_epoch(&mut h, 1);
     save(&mut h, "snapshot_plot_two_dataset_status");
+    h.get_by_label("Rate 1: 1 Hz (manual)").click();
+    h.run();
+    save(&mut h, "snapshot_plot_rate_override");
+    h.state_mut().rate_drafts[0] = "2".into();
+    h.run();
+    h.get_by_label("Apply override").click();
+    h.run();
+    assert_eq!(h.state().controller.override_hz(0), Some(2.0));
+    h.get_by_label("Rate 1: 2 Hz (manual)").click();
+    h.run();
+    h.get_by_label("Use estimated").click();
+    h.run();
+    assert_eq!(h.state().controller.override_hz(0), None);
 }
 
 #[test]
@@ -828,6 +842,7 @@ fn snapshot_two_dataset_status() {
 fn snapshot_info_window() {
     let mut c = two_solutions(0);
     c.dataset.as_mut().unwrap().malformed = 12;
+    c.dataset.as_mut().unwrap().duplicates_removed = 2;
     c.dataset
         .as_mut()
         .unwrap()
@@ -840,7 +855,7 @@ fn snapshot_info_window() {
         .push("UTC converted to GPST using the built-in leap-second table".into());
     c.file_errors[1].push("cannot open solution /example/missing.pos: file does not exist".into());
     let mut h = harness_with_controller(c);
-    h.get_by_label("⚠ 4").click();
+    h.get_by_label("⚠ 5").click();
     h.run();
     save(&mut h, "snapshot_plot_info_window");
 }

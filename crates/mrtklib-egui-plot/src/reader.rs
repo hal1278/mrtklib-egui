@@ -28,6 +28,7 @@ pub(crate) struct Dataset {
     pub relative: bool,
     pub time_system: String,
     pub malformed: usize,
+    pub duplicates_removed: usize,
     pub warnings: Vec<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -260,6 +261,7 @@ fn parse_with_time_layout(
         relative: false,
         time_system: String::new(),
         malformed: 0,
+        duplicates_removed: 0,
         warnings: vec![],
     };
     let mut before_heading = 0;
@@ -345,8 +347,24 @@ fn parse_with_time_layout(
             dataset.warnings.push("Reference position could not be read; Base Station origin is unavailable (reference separators must also be whitespace)".into());
         }
     }
-    // Stable ordering retains duplicate epochs; no data is discarded or merged.
-    dataset.points.sort_by_key(|p| p.time_ns);
+    // Preserve original file order when choosing one epoch per <=1 ms cluster.
+    let mut sorted: Vec<_> = std::mem::take(&mut dataset.points)
+        .into_iter()
+        .enumerate()
+        .collect();
+    sorted.sort_by_key(|(_, epoch)| epoch.time_ns);
+    dataset.points = sorted
+        .chunk_by(|a, b| b.1.time_ns - a.1.time_ns <= 1_000_000)
+        .map(|group| {
+            dataset.duplicates_removed += group.len() - 1;
+            group
+                .iter()
+                .min_by_key(|(file_index, _)| file_index)
+                .unwrap()
+                .1
+                .clone()
+        })
+        .collect();
     Ok(dataset)
 }
 
@@ -392,7 +410,36 @@ mod tests {
         parse(text.as_bytes()).unwrap()
     }
     #[test]
-    fn exact_decimal_timestamps_keep_the_rtktrace_five_ms_boundary() {
+    fn duplicate_removal_keeps_the_first_in_the_file_after_sorting() {
+        let mut text = format!("% GPST {LLH}\n");
+        for (clock, quality) in [
+            ("02.000000", 6),
+            ("00.000000", 1),
+            ("01.000000", 2),
+            ("01.000000", 3),
+            ("01.001000", 4),
+            ("01.002001", 5),
+            ("01.999500", 1),
+        ] {
+            text.push_str(&format!(
+                "2024/08/22 11:00:{clock} 35 139 40 {quality} 15 .1 .2 .3 0 0 0 1 3\n"
+            ));
+        }
+        let d = parse(text.as_bytes()).unwrap();
+        assert_eq!(
+            d.points.iter().map(|p| p.quality).collect::<Vec<_>>(),
+            [1, 2, 5, 6]
+        );
+        assert_eq!(d.duplicates_removed, 3);
+        assert!(
+            d.points
+                .windows(2)
+                .all(|p| p[1].time_ns - p[0].time_ns > 1_000_000)
+        );
+        assert_eq!(d.malformed, 0);
+    }
+    #[test]
+    fn exact_decimal_timestamps_preserve_high_rate_intervals() {
         for (system, calendar) in [("GPST", true), ("UTC", true), ("JST", false)] {
             let mut text = format!("% {system} {LLH}\n");
             for seconds in ["00.000", "00.005", "00.010"] {
@@ -408,7 +455,7 @@ mod tests {
             assert_eq!(d.points[1].time_ns - d.points[0].time_ns, 5_000_000);
             assert_eq!(
                 crate::summary::rate(d.points.iter().map(|p| p.time_ns)),
-                None
+                Some(200.0)
             );
         }
     }
@@ -519,7 +566,8 @@ mod tests {
         for (first, second) in [(calendar, tow), (tow, calendar)] {
             let text = format!("% GPST {LLH}\nbroken\n{first}\n{second}\n{first}\n");
             let d = parse(text.as_bytes()).unwrap();
-            assert_eq!(d.points.len(), 2);
+            assert_eq!(d.points.len(), 1);
+            assert_eq!(d.duplicates_removed, 1);
             assert_eq!(d.malformed, 2);
         }
     }
