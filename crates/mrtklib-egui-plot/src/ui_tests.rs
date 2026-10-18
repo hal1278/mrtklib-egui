@@ -151,7 +151,12 @@ fn select(h: &mut Harness<'_, PlotApp>, current: &str, next: &str) {
     )
     .click();
     h.run();
-    h.get_by_label(next).click();
+    h.get(
+        egui_kittest::kittest::By::new()
+            .role(egui::accesskit::Role::Button)
+            .label(next),
+    )
+    .click();
     h.run();
 }
 #[test]
@@ -1959,43 +1964,180 @@ fn grid_dot_vertices(h: &Harness<'_, PlotApp>, frame: egui::Rect) -> usize {
 }
 
 #[test]
-fn show_grid_hides_track_grid_preserves_tick_labels_and_leaves_time_grids_on() {
-    let mut h = harness(0);
-    let frame = h.state().geometry.unwrap().frames[0].unwrap();
-    let ticks = |h: &Harness<'_, PlotApp>| {
-        rendered_text(h)
-            .into_iter()
-            .filter(|(pos, text)| {
-                text.parse::<f64>().is_ok()
-                    && ((pos.x < frame.left() && (frame.top()..=frame.bottom()).contains(&pos.y))
-                        || (pos.y > frame.bottom()
-                            && (frame.left()..=frame.right()).contains(&pos.x)))
-            })
-            .collect::<Vec<_>>()
-    };
-    let labels = ticks(&h);
-    assert!(!labels.is_empty());
-    assert!(h.state().controller.settings.show_grid);
-    assert_eq!(full_frame_grid_lines(&h, frame), 2);
-    assert!(grid_dot_vertices(&h, frame) > 0);
-    h.get_by_label("Show Grid").click();
-    h.run();
-    assert!(!h.state().controller.settings.show_grid);
-    assert_eq!(h.state().geometry.unwrap().frames[0].unwrap(), frame);
-    assert_eq!(ticks(&h), labels);
-    assert_eq!(full_frame_grid_lines(&h, frame), 0);
-    assert_eq!(grid_dot_vertices(&h, frame), 0);
-    h.get_by_label("Show Grid").click();
-    h.run();
-    assert!(h.state().controller.settings.show_grid);
-    assert_eq!(full_frame_grid_lines(&h, frame), 2);
+fn ground_grid_formats_gate_labels_and_drawing_across_resizes() {
+    for format in 0..5 {
+        let mut h = harness(0);
+        h.state_mut().controller.settings.options.show_g_label = format;
+        for size in [egui::vec2(1000.0, 760.0), egui::vec2(820.0, 680.0)] {
+            h.set_size(size);
+            for show in [true, false] {
+                h.state_mut().controller.settings.show_grid = show;
+                h.run();
+                let frame = h.state().geometry.unwrap().frames[0].unwrap();
+                let labels: Vec<_> = rendered_text(&h)
+                    .into_iter()
+                    .filter(|(pos, text)| {
+                        pos.y >= frame.top() - 20.0 && text.parse::<f64>().is_ok()
+                    })
+                    .collect();
+                assert_eq!(
+                    !labels.is_empty(),
+                    show && (format == 2 || format == 4),
+                    "format {format}, show {show}"
+                );
+                // Plot item labels are clipped to the frame, including labels
+                // whose anchors lie on its edge. No native outside ticks remain.
+                for shape in &h.output().shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text().parse::<f64>().is_ok()
+                        && text.pos.y >= frame.top() - 20.0
+                    {
+                        assert_eq!(shape.clip_rect, frame);
+                    }
+                }
+                assert_eq!(grid_dot_vertices(&h, frame) > 0, show && format > 0);
+                assert_eq!(
+                    full_frame_grid_lines(&h, frame),
+                    if show && format > 0 { 2 } else { 0 }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ground_grid_options_leave_time_plots_unchanged() {
     for kind in [1, 2] {
         let mut h = harness(kind);
-        h.state_mut().controller.settings.show_grid = false;
-        h.run();
-        assert!(h.query_by_label("Show Grid").is_none());
         let frame = h.state().geometry.unwrap().frames[0].unwrap();
-        assert!(full_frame_grid_lines(&h, frame) > 0);
-        assert!(grid_dot_vertices(&h, frame) > 0);
+        let expected = (
+            full_frame_grid_lines(&h, frame),
+            grid_dot_vertices(&h, frame),
+            rendered_text(&h),
+        );
+        assert!(expected.0 > 0 && expected.1 > 0);
+        for format in 0..5 {
+            for show in [true, false] {
+                h.state_mut().controller.settings.options.show_g_label = format;
+                h.state_mut().controller.settings.show_grid = show;
+                h.run();
+                assert!(h.query_by_label("Show Grid").is_none());
+                assert_eq!(
+                    (
+                        full_frame_grid_lines(&h, frame),
+                        grid_dot_vertices(&h, frame),
+                        rendered_text(&h)
+                    ),
+                    expected
+                );
+            }
+        }
     }
+}
+
+#[test]
+fn options_columns_follow_reference_order_with_map_below() {
+    let mut h = harness(0);
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_label("Options...").click();
+    h.run();
+    let texts = rendered_text(&h);
+    let position = |label: &str| {
+        texts
+            .iter()
+            .rev()
+            .find(|(_, text)| text == label)
+            .unwrap()
+            .0
+    };
+    let columns = [
+        vec!["Time Format", "Lat/Lon Format", "Show Statistics"],
+        vec![
+            "Grid/Grid Label",
+            "Auto Fit",
+            "Y-Range (± m)",
+            "Coordinate Origin",
+            "Lat/Lon/Hgt",
+        ],
+        vec![
+            "Plot Style",
+            "Mark Size",
+            "Animation step",
+            "Update cycle (ms)",
+        ],
+    ];
+    let mut xs = vec![];
+    for labels in columns {
+        let points: Vec<_> = labels.iter().map(|s| position(s)).collect();
+        assert!(points.windows(2).all(|p| p[0].y < p[1].y));
+        assert!(points.iter().all(|p| (p.x - points[0].x).abs() < 1.0));
+        assert!(points.iter().all(|p| p.y < position("Map").y));
+        xs.push(points[0].x);
+    }
+    assert!(xs.windows(2).all(|x| x[0] < x[1]));
+    for (column, label, value) in [
+        (0, "Time Format", "h:m:s GPST"),
+        (0, "Lat/Lon Format", "Degrees"),
+        (1, "Grid/Grid Label", "Grid"),
+        (1, "Auto Fit", "ON"),
+        (1, "Coordinate Origin", "Average Pos"),
+        (2, "Plot Style", "Mark/Line"),
+        (2, "Mark Size", "2"),
+    ] {
+        let field = h
+            .get(
+                egui_kittest::kittest::By::new()
+                    .role(egui::accesskit::Role::ComboBox)
+                    .value(value),
+            )
+            .rect();
+        let label = position(label);
+        assert!(field.left() > label.x);
+        assert!((field.top()..=field.bottom()).contains(&label.y));
+        assert!(field.right() < xs.get(column + 1).copied().unwrap_or(INITIAL_SIZE[0]));
+    }
+
+    assert!(position("Map").y < position("Tile URL ({z}/{x}/{y})").y);
+    assert!(position("Tile URL ({z}/{x}/{y})").y < position("Tile attribution").y);
+    assert!(position("Tile attribution").y < position("OK").y);
+    select(&mut h, "Grid", "Circles/Label");
+    h.get_by_label("OK").click();
+    h.run();
+    assert_eq!(h.state().controller.settings.options.show_g_label, 4);
+}
+
+fn snapshot_grid_format(format: usize, name: &str) {
+    let mut h = harness(0);
+    h.state_mut().controller.settings.options.show_g_label = format;
+    h.run();
+    save(&mut h, &format!("snapshot_plot_grid_{name}"));
+    h.state_mut().controller.settings.show_grid = false;
+    h.run();
+    save(&mut h, &format!("snapshot_plot_grid_{name}_hidden"));
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_off() {
+    snapshot_grid_format(0, "off");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_lines() {
+    snapshot_grid_format(1, "lines");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_lines_labels() {
+    snapshot_grid_format(2, "lines_labels");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_circles() {
+    snapshot_grid_format(3, "circles");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_circles_labels() {
+    snapshot_grid_format(4, "circles_labels");
 }

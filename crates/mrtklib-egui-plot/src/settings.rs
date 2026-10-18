@@ -11,6 +11,8 @@ pub(crate) const ORIGINS: [&str; 6] = [
     "Base Station",
     "Lat/Lon/Hgt",
 ];
+pub(crate) const GRID_FORMATS: [&str; 5] =
+    ["OFF", "Grid", "Grid/Label", "Circles", "Circles/Label"];
 pub(crate) const SIZES: [u32; 8] = [1, 2, 3, 4, 5, 10, 15, 20];
 /// RTKPLOT's RangeList labels and YRange values in metres.
 pub(crate) const ORIGIN_RANGES: [(&str, f64); 23] = [
@@ -47,6 +49,7 @@ pub(crate) struct Options {
     pub auto_fit: bool,
     pub dms: bool,
     pub statistics: bool,
+    pub show_g_label: usize,
     pub style: usize,
     pub mark_size: u32,
     pub origin: usize,
@@ -65,6 +68,7 @@ impl Default for Options {
             auto_fit: true,
             dms: false,
             statistics: false,
+            show_g_label: 1,
             style: 0,
             mark_size: 2,
             origin: 2,
@@ -79,7 +83,11 @@ impl Default for Options {
 }
 impl Options {
     pub fn validate(&self) -> Result<(), String> {
-        if self.origin >= ORIGINS.len() || self.style > 2 || !SIZES.contains(&self.mark_size) {
+        if self.origin >= ORIGINS.len()
+            || self.style > 2
+            || self.show_g_label >= GRID_FORMATS.len()
+            || !SIZES.contains(&self.mark_size)
+        {
             return Err("invalid plot option selection".into());
         }
         if !self.y_range.is_finite() || self.y_range <= 0.0 {
@@ -275,6 +283,7 @@ mod tests {
             }],
             qualities: QualityFilter([false, false, false, false, false, false, true, false]),
             options: Options {
+                show_g_label: 4,
                 origin: 5,
                 auto_fit: false,
                 llh: [35.0, 139.0, 10.0],
@@ -290,12 +299,28 @@ mod tests {
         };
         save(&path, &s).unwrap();
         assert_eq!(load(&path).unwrap(), s);
+        for format in 0..GRID_FORMATS.len() {
+            let mut settings = s.clone();
+            settings.options.show_g_label = format;
+            save(&path, &settings).unwrap();
+            assert_eq!(load(&path).unwrap(), settings);
+        }
+        std::fs::write(
+            &path,
+            r#"{"options":{"style":2,"tile_url":"http://localhost/{z}/{x}/{y}"}}"#,
+        )
+        .unwrap();
+        let old_options = load(&path).unwrap().options;
+        assert_eq!(old_options.show_g_label, 1);
+        assert_eq!(old_options.style, 2);
+        assert_eq!(old_options.tile_url, "http://localhost/{z}/{x}/{y}");
         std::fs::write(&path, r#"{"quality":6}"#).unwrap();
         let migrated = load(&path).unwrap();
         assert!(!migrated.map);
         assert!(migrated.show_grid);
         assert!(migrated.options.tile_url.is_empty());
         assert!(migrated.options.tile_attribution.is_empty());
+        assert_eq!(migrated.options.show_g_label, 1);
         assert_eq!(migrated.options.anim_cycle, 10);
         assert_eq!(migrated.options.ref_cycle, 100);
         assert!(migrated.qualities.visible(6));
@@ -305,6 +330,8 @@ mod tests {
             r#"{"manual_rates":[{"path":"a.pos","hz":0}]}"#,
             "{bad",
             r#"{"plot":9}"#,
+            r#"{"options":{"show_g_label":5}}"#,
+            r#"{"options":{"show_g_label":-1}}"#,
             r#"{"options":{"y_range":0}}"#,
             r#"{"options":{"ref_cycle":-1}}"#,
             r#"{"options":{"anim_cycle":1.5}}"#,

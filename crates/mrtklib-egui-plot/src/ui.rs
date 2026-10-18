@@ -5,7 +5,7 @@ use crate::{
     grid, map,
     navigation::{self, Area, Bounds, DragMode, Range, Target as ViewTarget, Viewport},
     playback::{Fixes, Playback},
-    settings::{ORIGIN_RANGES, ORIGINS, Options, PLOTS, SIZES},
+    settings::{GRID_FORMATS, ORIGIN_RANGES, ORIGINS, Options, PLOTS, SIZES},
     summary, time,
 };
 use eframe::egui::{self, Color32};
@@ -1123,91 +1123,124 @@ impl PlotApp {
         let mut ok = false;
         let mut cancel = false;
         egui::Modal::new(egui::Id::new("plot options")).show(ctx, |ui| {
-            ui.set_width(440.0);
+            ui.set_width(900.0);
             ui.heading("Options");
-            egui::Grid::new("plot options grid")
-                .num_columns(2)
-                .spacing([18.0, 8.0])
-                .show(ui, |ui| {
-                    left_label(ui, "Time Format");
-                    let mut value = if draft.week_time {
-                        0
-                    } else if draft.utc {
-                        2
-                    } else {
-                        1
-                    };
-                    combo(
-                        ui,
-                        "time format",
-                        &mut value,
-                        &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
-                    );
-                    draft.week_time = value == 0;
-                    draft.utc = value == 2;
-                    ui.end_row();
-                    left_label(ui, "Lat/Lon Format");
-                    let mut value = usize::from(draft.dms);
-                    combo(ui, "lat lon format", &mut value, &["Degrees", "DMS"]);
-                    draft.dms = value == 1;
-                    ui.end_row();
-                    left_label(ui, "Auto Fit");
-                    let mut value = usize::from(draft.auto_fit);
-                    combo(ui, "auto fit", &mut value, &["OFF", "ON"]);
-                    draft.auto_fit = value == 1;
-                    ui.end_row();
-                    left_label(ui, "Show Statistics");
-                    ui.checkbox(&mut draft.statistics, "");
-                    ui.end_row();
-                    left_label(ui, "Plot Style");
-                    combo(
-                        ui,
-                        "plot style",
-                        &mut draft.style,
-                        &["Mark/Line", "Mark", "Line"],
-                    );
-                    ui.end_row();
-                    left_label(ui, "Mark Size");
-                    egui::ComboBox::from_id_salt("mark size")
-                        .width(180.0)
-                        .height(400.0)
-                        .selected_text(draft.mark_size.to_string())
-                        .show_ui(ui, |ui| {
-                            for size in SIZES {
-                                ui.selectable_value(&mut draft.mark_size, size, size.to_string());
+            ui.columns(3, |columns| {
+                for (column, ui) in columns.iter_mut().enumerate() {
+                    egui::Grid::new(("plot options column", column))
+                        .num_columns(2)
+                        .spacing([8.0, 8.0])
+                        .show(ui, |ui| match column {
+                            0 => {
+                                ui.label("Time Format");
+                                let mut value = if draft.week_time {
+                                    0
+                                } else if draft.utc {
+                                    2
+                                } else {
+                                    1
+                                };
+                                combo(
+                                    ui,
+                                    "time format",
+                                    &mut value,
+                                    &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
+                                );
+                                draft.week_time = value == 0;
+                                draft.utc = value == 2;
+                                ui.end_row();
+                                ui.label("Lat/Lon Format");
+                                let mut value = usize::from(draft.dms);
+                                combo(ui, "lat lon format", &mut value, &["Degrees", "DMS"]);
+                                draft.dms = value == 1;
+                                ui.end_row();
+                                ui.label("Show Statistics");
+                                ui.checkbox(&mut draft.statistics, "");
+                                ui.end_row();
+                            }
+                            1 => {
+                                ui.label("Grid/Grid Label");
+                                combo(ui, "grid format", &mut draft.show_g_label, &GRID_FORMATS);
+                                ui.end_row();
+                                ui.label("Auto Fit");
+                                let mut value = usize::from(draft.auto_fit);
+                                combo(ui, "auto fit", &mut value, &["OFF", "ON"]);
+                                draft.auto_fit = value == 1;
+                                ui.end_row();
+                                ui.label("Y-Range (± m)");
+                                ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1));
+                                ui.end_row();
+                                ui.label("Coordinate Origin");
+                                combo(ui, "coordinate origin", &mut draft.origin, &ORIGINS);
+                                ui.end_row();
+                                ui.label("Lat/Lon/Hgt");
+                                ui.horizontal(|ui| {
+                                    for (i, label) in
+                                        ["Latitude (deg)", "Longitude (deg)", "Height (m)"]
+                                            .iter()
+                                            .enumerate()
+                                    {
+                                        ui.add_enabled(
+                                            draft.origin == 5,
+                                            egui::DragValue::new(&mut draft.llh[i])
+                                                .speed(if i < 2 { 0.000001 } else { 0.1 })
+                                                .max_decimals(if i < 2 { 9 } else { 4 }),
+                                        )
+                                        .on_hover_text(*label);
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                            _ => {
+                                ui.label("Plot Style");
+                                combo(
+                                    ui,
+                                    "plot style",
+                                    &mut draft.style,
+                                    &["Mark/Line", "Mark", "Line"],
+                                );
+                                ui.end_row();
+                                ui.label("Mark Size");
+                                egui::ComboBox::from_id_salt("mark size")
+                                    .width(0.0)
+                                    .height(400.0)
+                                    .selected_text(draft.mark_size.to_string())
+                                    .show_ui(ui, |ui| {
+                                        for size in SIZES {
+                                            ui.selectable_value(
+                                                &mut draft.mark_size,
+                                                size,
+                                                size.to_string(),
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+                                ui.label("Animation step").on_hover_text(
+                                    "Epochs per tick; nonpositive values act as one",
+                                );
+                                ui.add(egui::DragValue::new(&mut draft.anim_cycle));
+                                ui.end_row();
+                                ui.label("Update cycle (ms)")
+                                    .on_hover_text("Zero disables animation ticks");
+                                ui.add(egui::DragValue::new(&mut draft.ref_cycle));
+                                ui.end_row();
                             }
                         });
-                    ui.end_row();
-                    left_label(ui, "Animation step (epochs/tick)");
-                    ui.add(egui::DragValue::new(&mut draft.anim_cycle));
-                    ui.end_row();
-                    left_label(ui, "Refresh cycle (ms; 0 disables)");
-                    ui.add(egui::DragValue::new(&mut draft.ref_cycle));
-                    ui.end_row();
-                    left_label(ui, "Coordinate Origin");
-                    combo(ui, "coordinate origin", &mut draft.origin, &ORIGINS);
-                    ui.end_row();
-                    for (i, label) in ["Latitude (deg)", "Longitude (deg)", "Height (m)"]
-                        .iter()
-                        .enumerate()
-                    {
-                        left_label(ui, label);
-                        ui.add_enabled(
-                            draft.origin == 5,
-                            egui::DragValue::new(&mut draft.llh[i])
-                                .speed(if i < 2 { 0.000001 } else { 0.1 })
-                                .max_decimals(if i < 2 { 9 } else { 4 }),
-                        );
-                        ui.end_row();
-                    }
+                }
+            });
+            ui.separator();
+            ui.heading("Map");
+            egui::Grid::new("plot map options")
+                .num_columns(2)
+                .show(ui, |ui| {
                     left_label(ui, "Tile URL ({z}/{x}/{y})");
-                    ui.add(egui::TextEdit::singleline(&mut draft.tile_url));
+                    ui.add(egui::TextEdit::singleline(&mut draft.tile_url).desired_width(690.0));
                     ui.end_row();
                     left_label(ui, "Tile attribution");
-                    ui.text_edit_singleline(&mut draft.tile_attribution);
-                    ui.end_row();
-                    left_label(ui, "Center Origin Y-range ±");
-                    ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut draft.tile_attribution)
+                            .desired_width(690.0),
+                    );
                     ui.end_row();
                 });
             if let Some(e) = &self.options_error {
@@ -1626,6 +1659,7 @@ impl PlotApp {
             .label_formatter(|_| None);
         if kind == 0 {
             plot = plot
+                .show_axes(false)
                 .x_axis_label("East (m)")
                 .x_axis_formatter(|mark, _| grid::number(mark.value, mark.step_size));
         } else {
@@ -1647,100 +1681,111 @@ impl PlotApp {
         let show_grid = kind != 0 || self.controller.settings.show_grid;
         let tiles = &mut self.tiles;
         let viewport = &mut self.viewport;
-        let response = plot.show(ui, |pui| {
-            if kind == 0
-                && viewport.resize_track([
-                    f64::from(pui.response().rect.width().max(1.0)),
-                    f64::from(pui.response().rect.height().max(1.0)),
-                ])
-            {
-                ctx.request_repaint();
-            }
-            if kind == 0
-                && let Some(s) = &current
-            {
-                fixes.follow(viewport, s.time, std::array::from_fn(|i| s.component(i)));
-            }
-            let bounds = viewport.bounds(if kind == 0 {
-                ViewTarget::Track
-            } else {
-                ViewTarget::Both(component)
-            });
-            pui.set_plot_bounds(PlotBounds::from_min_max(
-                [bounds.x.min, bounds.y.min],
-                [bounds.x.max, bounds.y.max],
-            ));
-            if let Some(origin) = &map_origin {
-                for image in tiles.images(
-                    &ctx,
-                    origin.position,
-                    bounds,
-                    f64::from(pui.response().rect.width() * ctx.pixels_per_point()),
-                ) {
-                    pui.image(image);
+        let response = ui
+            .scope(|ui| {
+                if kind == 0 {
+                    // Ground-track's box belongs to DrawAxis/DrawCircles and is
+                    // absent for OFF or a released Show Grid button.
+                    ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
                 }
-            }
-            if show_grid {
-                pui.add(grid::Grid::new(kind != 0 && !o.week_time));
-            }
-            for source in 0..3 {
-                let start = samples.partition_point(|s| s.source < source);
-                let end = samples.partition_point(|s| s.source <= source);
-                let series = &samples[start..end];
-                let series_values = &values[start..end];
-                if o.style != 1 {
-                    for segment in data::segments(series, kind != 0) {
+                plot.show(ui, |pui| {
+                    if kind == 0
+                        && viewport.resize_track([
+                            f64::from(pui.response().rect.width().max(1.0)),
+                            f64::from(pui.response().rect.height().max(1.0)),
+                        ])
+                    {
+                        ctx.request_repaint();
+                    }
+                    if kind == 0
+                        && let Some(s) = &current
+                    {
+                        fixes.follow(viewport, s.time, std::array::from_fn(|i| s.component(i)));
+                    }
+                    let bounds = viewport.bounds(if kind == 0 {
+                        ViewTarget::Track
+                    } else {
+                        ViewTarget::Both(component)
+                    });
+                    pui.set_plot_bounds(PlotBounds::from_min_max(
+                        [bounds.x.min, bounds.y.min],
+                        [bounds.x.max, bounds.y.max],
+                    ));
+                    if let Some(origin) = &map_origin {
+                        for image in tiles.images(
+                            &ctx,
+                            origin.position,
+                            bounds,
+                            f64::from(pui.response().rect.width() * ctx.pixels_per_point()),
+                        ) {
+                            pui.image(image);
+                        }
+                    }
+                    if kind == 0 {
+                        pui.add(grid::Grid::ground(o.show_g_label, show_grid));
+                    } else {
+                        pui.add(grid::Grid::new(!o.week_time));
+                    }
+                    for source in 0..3 {
+                        let start = samples.partition_point(|s| s.source < source);
+                        let end = samples.partition_point(|s| s.source <= source);
+                        let series = &samples[start..end];
+                        let series_values = &values[start..end];
+                        if o.style != 1 {
+                            for segment in data::segments(series, kind != 0) {
+                                pui.line(
+                                    Line::new(
+                                        format!("trajectory {source}"),
+                                        series_values[segment].to_vec(),
+                                    )
+                                    .width(1.0)
+                                    .style(line_style(source))
+                                    .color(Color32::from_gray(192)),
+                                );
+                            }
+                        }
+                        if o.style != 2 {
+                            for quality in 0..=7 {
+                                let points: Vec<_> = series
+                                    .iter()
+                                    .zip(series_values)
+                                    .filter(|(s, _)| s.quality == quality)
+                                    .map(|(_, v)| *v)
+                                    .collect();
+                                let [r, g, b] = data::mark_color(source, quality);
+                                pui.points(
+                                    Points::new(solution_style(quality).0, points)
+                                        .radius(o.mark_size as f32 / 2.0)
+                                        .color(Color32::from_rgb(r, g, b)),
+                                );
+                            }
+                        }
+                    }
+                    if kind != 0
+                        && let Some(time) = cursor_time
+                    {
                         pui.line(
                             Line::new(
-                                format!("trajectory {source}"),
-                                series_values[segment].to_vec(),
+                                "time cursor",
+                                vec![[time, bounds.y.min], [time, bounds.y.max]],
                             )
-                            .width(1.0)
-                            .style(line_style(source))
-                            .color(Color32::from_gray(192)),
+                            .color(Color32::BLACK),
                         );
                     }
-                }
-                if o.style != 2 {
-                    for quality in 0..=7 {
-                        let points: Vec<_> = series
-                            .iter()
-                            .zip(series_values)
-                            .filter(|(s, _)| s.quality == quality)
-                            .map(|(_, v)| *v)
-                            .collect();
-                        let [r, g, b] = data::mark_color(source, quality);
+                    for s in &marks {
+                        if kind == 1 && s.component(component).is_none() {
+                            continue;
+                        }
                         pui.points(
-                            Points::new(solution_style(quality).0, points)
-                                .radius(o.mark_size as f32 / 2.0)
-                                .color(Color32::from_rgb(r, g, b)),
+                            Points::new("selected epoch", vec![coordinates(s, kind, component)])
+                                .radius((o.mark_size as f32 / 2.0 + 3.0).max(4.0))
+                                .filled(false)
+                                .color(Color32::BLACK),
                         );
                     }
-                }
-            }
-            if kind != 0
-                && let Some(time) = cursor_time
-            {
-                pui.line(
-                    Line::new(
-                        "time cursor",
-                        vec![[time, bounds.y.min], [time, bounds.y.max]],
-                    )
-                    .color(Color32::BLACK),
-                );
-            }
-            for s in &marks {
-                if kind == 1 && s.component(component).is_none() {
-                    continue;
-                }
-                pui.points(
-                    Points::new("selected epoch", vec![coordinates(s, kind, component)])
-                        .radius((o.mark_size as f32 / 2.0 + 3.0).max(4.0))
-                        .filled(false)
-                        .color(Color32::BLACK),
-                );
-            }
-        });
+                })
+            })
+            .inner;
         if map_origin.is_some() && !o.tile_attribution.is_empty() {
             let rect = *response.transform.frame();
             let attribution = mask(&o.tile_attribution, &[]);
