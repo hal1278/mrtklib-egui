@@ -1,11 +1,13 @@
-[global]
-disable = ["MD025", "MD013"]
-
 [MD003]
 style = "atx"
 
 [MD004]
 style = "dash"
+
+[MD013]
+line-length = 0
+reflow = true
+reflow-mode = "sentence-per-line"
 
 [MD018]
 magiclink = true
