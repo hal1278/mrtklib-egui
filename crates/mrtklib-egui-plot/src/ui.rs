@@ -1134,120 +1134,134 @@ impl PlotApp {
                 .y
                 .max(text_height + ui.spacing().button_padding.y * 2.0);
             ui.heading("Options");
+            let widths_id = ui.make_persistent_id("uniform Options cells");
+            let widths = ui
+                .data(|data| data.get_temp::<egui::Vec2>(widths_id))
+                .unwrap_or(egui::Vec2::splat(ui.spacing().interact_size.x));
+            let mut cells = OptionCells {
+                widths,
+                measured: egui::Vec2::ZERO,
+            };
             let columns: [egui::Rect; 3] = ui
                 .horizontal_top(|ui| {
                     std::array::from_fn(|column| {
-                        // Grid uses content widths and the shared style's row height
-                        // and spacing; no RTKPLOT pixel coordinates enter the layout.
                         egui::Grid::new(("plot options column", column))
                             .show(ui, |ui| match column {
                                 0 => {
-                                    ui.label("Time Format");
-                                    let mut value = if draft.week_time {
-                                        0
-                                    } else if draft.utc {
-                                        2
-                                    } else {
-                                        1
-                                    };
-                                    option_combo(
-                                        ui,
-                                        "time format",
-                                        &mut value,
-                                        &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
-                                    );
-                                    draft.week_time = value == 0;
-                                    draft.utc = value == 2;
-                                    ui.end_row();
-                                    ui.label("Lat/Lon Format");
-                                    let mut value = usize::from(draft.dms);
-                                    option_combo(
-                                        ui,
-                                        "lat lon format",
-                                        &mut value,
-                                        &["Degrees", "DMS"],
-                                    );
-                                    draft.dms = value == 1;
-                                    ui.end_row();
-                                    ui.label("Show Statistics");
-                                    ui.checkbox(&mut draft.statistics, "");
-                                    ui.end_row();
+                                    cells.row(ui, "Time Format", |ui| {
+                                        let mut value = if draft.week_time {
+                                            0
+                                        } else if draft.utc {
+                                            2
+                                        } else {
+                                            1
+                                        };
+                                        let response = option_combo(
+                                            ui,
+                                            "time format",
+                                            &mut value,
+                                            &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
+                                        );
+                                        draft.week_time = value == 0;
+                                        draft.utc = value == 2;
+                                        response
+                                    });
+                                    cells.row(ui, "Lat/Lon Format", |ui| {
+                                        let mut value = usize::from(draft.dms);
+                                        let response = option_combo(
+                                            ui,
+                                            "lat lon format",
+                                            &mut value,
+                                            &["Degrees", "DMS"],
+                                        );
+                                        draft.dms = value == 1;
+                                        response
+                                    });
+                                    cells.row(ui, "Show Statistics", |ui| {
+                                        ui.checkbox(&mut draft.statistics, "")
+                                    });
                                 }
                                 1 => {
-                                    ui.label("Grid/Grid Label");
-                                    option_combo(
-                                        ui,
-                                        "grid format",
-                                        &mut draft.show_g_label,
-                                        &GRID_FORMATS,
-                                    );
-                                    ui.end_row();
-                                    ui.label("Auto Fit");
-                                    let mut value = usize::from(draft.auto_fit);
-                                    option_combo(ui, "auto fit", &mut value, &["OFF", "ON"]);
-                                    draft.auto_fit = value == 1;
-                                    ui.end_row();
-                                    ui.label("Y-Range (± m)");
-                                    ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1));
-                                    ui.end_row();
-                                    ui.label("Coordinate Origin");
-                                    option_combo(
-                                        ui,
-                                        "coordinate origin",
-                                        &mut draft.origin,
-                                        &ORIGINS,
-                                    );
-                                    ui.end_row();
+                                    cells.row(ui, "Grid/Grid Label", |ui| {
+                                        option_combo(
+                                            ui,
+                                            "grid format",
+                                            &mut draft.show_g_label,
+                                            &GRID_FORMATS,
+                                        )
+                                    });
+                                    cells.row(ui, "Auto Fit", |ui| {
+                                        let mut value = usize::from(draft.auto_fit);
+                                        let response = option_combo(
+                                            ui,
+                                            "auto fit",
+                                            &mut value,
+                                            &["OFF", "ON"],
+                                        );
+                                        draft.auto_fit = value == 1;
+                                        response
+                                    });
+                                    cells.row(ui, "Y-Range (± m)", |ui| {
+                                        ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1))
+                                    });
+                                    cells.row(ui, "Coordinate Origin", |ui| {
+                                        option_combo(
+                                            ui,
+                                            "coordinate origin",
+                                            &mut draft.origin,
+                                            &ORIGINS,
+                                        )
+                                    });
                                 }
                                 _ => {
-                                    ui.label("Plot Style");
-                                    option_combo(
-                                        ui,
-                                        "plot style",
-                                        &mut draft.style,
-                                        &["Mark/Line", "Mark", "Line"],
-                                    );
-                                    ui.end_row();
-                                    ui.label("Mark Size");
-                                    ui.horizontal(|ui| {
-                                        egui::ComboBox::from_id_salt("mark size")
-                                            .width(ui.spacing().interact_size.x)
-                                            .height(choice_height(ui, SIZES.len()))
-                                            .selected_text(draft.mark_size.to_string())
-                                            .show_ui(ui, |ui| {
-                                                for size in SIZES {
-                                                    ui.selectable_value(
-                                                        &mut draft.mark_size,
-                                                        size,
-                                                        size.to_string(),
-                                                    );
-                                                }
-                                            });
+                                    cells.row(ui, "Plot Style", |ui| {
+                                        option_combo(
+                                            ui,
+                                            "plot style",
+                                            &mut draft.style,
+                                            &["Mark/Line", "Mark", "Line"],
+                                        )
                                     });
-                                    ui.end_row();
+                                    cells.row(ui, "Mark Size", |ui| {
+                                        let labels: Vec<_> =
+                                            SIZES.iter().map(u32::to_string).collect();
+                                        let choices: Vec<_> =
+                                            labels.iter().map(String::as_str).collect();
+                                        let mut index = SIZES
+                                            .iter()
+                                            .position(|size| *size == draft.mark_size)
+                                            .expect("validated mark size");
+                                        let response =
+                                            option_combo(ui, "mark size", &mut index, &choices);
+                                        draft.mark_size = SIZES[index];
+                                        response
+                                    });
                                     for (label, value) in [
                                         ("Grid label size", &mut draft.grid_label_size),
                                         ("Statistics size", &mut draft.statistics_size),
                                     ] {
-                                        ui.label(label);
-                                        ui.add(
-                                            egui::DragValue::new(value)
-                                                .range(TEXT_SIZE_RANGE)
-                                                .clamp_existing_to_range(false)
-                                                .speed(0.5)
-                                                .suffix(" pt"),
-                                        );
-                                        ui.end_row();
+                                        cells.row(ui, label, |ui| {
+                                            ui.add(
+                                                egui::DragValue::new(value)
+                                                    .range(TEXT_SIZE_RANGE)
+                                                    .clamp_existing_to_range(false)
+                                                    .speed(0.5)
+                                                    .suffix(" pt"),
+                                            )
+                                        });
                                     }
-                                    ui.label("Animation step").on_hover_text(
-                                        "Epochs per tick; nonpositive values act as one",
-                                    );
-                                    ui.add(egui::DragValue::new(&mut draft.anim_cycle));
-                                    ui.end_row();
-                                    ui.label("Update cycle (ms)")
+                                    cells
+                                        .row(ui, "Animation step", |ui| {
+                                            ui.add(egui::DragValue::new(&mut draft.anim_cycle))
+                                        })
+                                        .on_hover_text(
+                                            "Epochs per tick; nonpositive values act as one",
+                                        );
+                                    cells
+                                        .row(ui, "Update cycle (ms)", |ui| {
+                                            ui.add(egui::DragValue::new(&mut draft.ref_cycle))
+                                        })
                                         .on_hover_text("Zero disables animation ticks");
-                                    ui.add(egui::DragValue::new(&mut draft.ref_cycle));
-                                    ui.end_row();
                                 }
                             })
                             .response
@@ -1272,7 +1286,7 @@ impl PlotApp {
                     .max_rect(row)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
                 |ui| {
-                    ui.label("Lat/Lon/Hgt");
+                    cells.label(ui, "Lat/Lon/Hgt");
                     let count = draft.llh.len();
                     for (i, label) in ["Latitude (deg)", "Longitude (deg)", "Height (m)"]
                         .iter()
@@ -1295,6 +1309,11 @@ impl PlotApp {
                     }
                 },
             );
+            if cells.measured != widths {
+                ui.data_mut(|data| data.insert_temp(widths_id, cells.measured));
+                ui.ctx()
+                    .request_discard("uniform Options label and field measurements changed");
+            }
             ui.separator();
             ui.heading("Map");
             ui.label("Tile URL ({z}/{x}/{y})");
@@ -2211,10 +2230,56 @@ impl eframe::App for PlotApp {
         }
     }
 }
+/// Share intrinsic label/widget measurements across the three Options grids.
+/// Intrinsic sizes remain independent of allocated cell widths, allowing both
+/// growth and shrinkage when text, values or the shared style change.
+struct OptionCells {
+    widths: egui::Vec2,
+    measured: egui::Vec2,
+}
+impl OptionCells {
+    fn label(&mut self, ui: &mut egui::Ui, text: &str) -> egui::Response {
+        let label = ui
+            .allocate_ui_with_layout(
+                egui::vec2(self.widths.x, ui.spacing().interact_size.y),
+                egui::Layout::left_to_right(egui::Align::Center)
+                    .with_main_align(egui::Align::Min)
+                    .with_main_justify(true)
+                    .with_cross_justify(true),
+                |ui| ui.label(text),
+            )
+            .inner;
+        self.measured.x = self
+            .measured
+            .x
+            .max(label.intrinsic_size().expect("label intrinsic size").x);
+        label
+    }
+
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        field: impl FnOnce(&mut egui::Ui) -> egui::Response,
+    ) -> egui::Response {
+        let height = ui.spacing().interact_size.y;
+        let label = self.label(ui, label);
+        let field = ui.add_sized(egui::vec2(self.widths.y, height), field);
+        self.measured.y = self.measured.y.max(
+            field
+                .intrinsic_size()
+                .expect("Options widget intrinsic size")
+                .x,
+        );
+        ui.end_row();
+        label | field
+    }
+}
+
 fn combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) {
     combo_with_width(ui, id, value, items, 0.0);
 }
-fn option_combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) {
+fn option_combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) -> egui::Response {
     let width = items
         .iter()
         .map(|text| {
@@ -2231,9 +2296,17 @@ fn option_combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) 
         + ui.spacing().icon_width
         + ui.spacing().icon_spacing
         + ui.spacing().button_padding.x * 2.0;
-    ui.horizontal(|ui| combo_with_width(ui, id, value, items, width));
+    let mut response = combo_with_width(ui, id, value, items, ui.available_width().max(width));
+    response.set_intrinsic_size(egui::vec2(width, response.rect.height()));
+    response
 }
-fn combo_with_width(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str], width: f32) {
+fn combo_with_width(
+    ui: &mut egui::Ui,
+    id: &str,
+    value: &mut usize,
+    items: &[&str],
+    width: f32,
+) -> egui::Response {
     egui::ComboBox::from_id_salt(id)
         .selected_text(items[*value])
         .width(width)
@@ -2244,7 +2317,8 @@ fn combo_with_width(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&st
                     ui.selectable_value(value, i, *label);
                 }
             });
-        });
+        })
+        .response
 }
 fn choice_height(ui: &egui::Ui, count: usize) -> f32 {
     count as f32

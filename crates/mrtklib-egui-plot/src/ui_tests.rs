@@ -2042,7 +2042,7 @@ fn ground_grid_options_leave_time_plots_unchanged() {
     }
 }
 
-fn options_layout(h: &Harness<'_, PlotApp>) {
+fn options_layout(h: &Harness<'_, PlotApp>) -> egui::Vec2 {
     use egui::accesskit::Role;
     use egui_kittest::kittest::By;
     let dialog = h
@@ -2086,8 +2086,16 @@ fn options_layout(h: &Harness<'_, PlotApp>) {
     let mut widgets = controls.clone();
     let mut blocks = Vec::new();
     let mut starts = Vec::new();
+    let label_width = label(columns[0][0]).width();
+    let mut field_width = None;
     for names in &columns {
         let rects: Vec<_> = names.iter().map(|text| label(text)).collect();
+        for rect in &rects {
+            assert!(
+                (rect.width() - label_width).abs() <= tolerance,
+                "label cells must have one measured width across all three columns"
+            );
+        }
         assert!(
             rects
                 .windows(2)
@@ -2106,6 +2114,7 @@ fn options_layout(h: &Harness<'_, PlotApp>) {
     for (i, names) in columns.iter().enumerate() {
         let first = label(names[0]);
         let last = label(names.last().unwrap());
+        let mut fields = Vec::new();
         for (_, rect) in &controls {
             if rect.left() >= starts[i] - tolerance
                 && starts
@@ -2114,10 +2123,33 @@ fn options_layout(h: &Harness<'_, PlotApp>) {
                 && rect.center().y >= first.center().y - tolerance
                 && rect.center().y <= last.center().y + tolerance
             {
+                let width = *field_width.get_or_insert(rect.width());
+                assert!(
+                    (rect.width() - width).abs() <= tolerance,
+                    "field cells must have one measured width across all three columns"
+                );
+                assert!(
+                    (rect.left() - first.right() - h.ctx.global_style().spacing.item_spacing.x)
+                        .abs()
+                        <= tolerance,
+                    "fields must align immediately after the uniform label cells"
+                );
+                fields.push(*rect);
                 blocks[i] = blocks[i].union(*rect);
             }
         }
+        assert_eq!(fields.len(), names.len());
+        assert!(
+            fields
+                .windows(2)
+                .all(|pair| (pair[0].left() - pair[1].left()).abs() <= tolerance)
+        );
     }
+    assert!(
+        blocks
+            .iter()
+            .all(|b| (b.width() - blocks[0].width()).abs() <= tolerance)
+    );
     assert!(
         blocks
             .windows(2)
@@ -2126,6 +2158,7 @@ fn options_layout(h: &Harness<'_, PlotApp>) {
     let block = blocks.iter().copied().reduce(egui::Rect::union).unwrap();
     let llh = label("Lat/Lon/Hgt");
     assert!((llh.left() - starts[1]).abs() <= tolerance);
+    assert!((llh.width() - label_width).abs() <= tolerance);
     assert!(llh.top() >= block.bottom() - tolerance);
     let mut coordinates: Vec<_> = controls
         .iter()
@@ -2137,6 +2170,10 @@ fn options_layout(h: &Harness<'_, PlotApp>) {
     coordinates.sort_by(|a, b| a.left().total_cmp(&b.left()));
     assert_eq!(coordinates.len(), 3);
     assert!(llh.right() <= coordinates[0].left() + tolerance);
+    assert!(
+        (coordinates[0].left() - llh.right() - h.ctx.global_style().spacing.item_spacing.x).abs()
+            <= tolerance
+    );
     assert!((coordinates.last().unwrap().right() - blocks[2].right()).abs() <= tolerance);
     let map = label("Map");
     assert!(map.top() >= llh.bottom());
@@ -2189,6 +2226,7 @@ fn options_layout(h: &Harness<'_, PlotApp>) {
             );
         }
     }
+    egui::vec2(label_width, field_width.unwrap())
 }
 
 fn options_at_text_scale(scale: f32) -> Harness<'static, PlotApp> {
@@ -2225,6 +2263,28 @@ fn options_columns_follow_reference_order_with_map_below() {
         assert_eq!(h.state().controller.settings.options.grid_label_size, 18.5);
         assert_eq!(h.state().controller.settings.options.statistics_size, 24.0);
     }
+}
+
+#[test]
+fn options_uniform_cells_remeasure_when_text_size_changes() {
+    let mut h = options_at_text_scale(1.0);
+    let default = options_layout(&h);
+    let text_styles = h.ctx.global_style().text_styles.clone();
+    h.ctx.all_styles_mut(|style| {
+        for font in style.text_styles.values_mut() {
+            font.size *= 1.6;
+        }
+    });
+    h.run();
+    let large = options_layout(&h);
+    assert!(large.x > default.x && large.y > default.y);
+    h.ctx.all_styles_mut(|style| {
+        style.text_styles = text_styles.clone();
+    });
+    h.run();
+    let restored = options_layout(&h);
+    let tolerance = 1.0 / h.ctx.pixels_per_point();
+    assert!((restored - default).abs().max_elem() <= tolerance);
 }
 
 #[test]
