@@ -1274,23 +1274,26 @@ fn track_click_selects_primary_first_hit_only_with_show_track() {
 }
 #[test]
 fn playback_buttons_fit_default_width_while_all_controls_are_visible() {
-    let mut h = harness(1);
-    h.get_by_label("Show Track").click();
-    h.run();
-    for label in [
-        "Show Track",
-        "Fix Horiz",
-        "Fix Vert",
-        "Animate",
-        "Fit Horizontal",
-        "Fit Vertical",
-        "Center Origin",
-        "5m...",
-    ] {
-        let r = h.get_by_label(label).rect();
-        assert!(r.right() <= INITIAL_SIZE[0], "{label}: {r:?}");
+    for kind in [0, 1] {
+        let mut h = harness(kind);
+        h.get_by_label("Show Track").click();
+        h.run();
+        let labels = if kind == 0 {
+            vec!["Map", "Show Track", "Fix Center", "Animate"]
+        } else {
+            vec!["Show Track", "Fix Horiz", "Fix Vert", "Animate"]
+        };
+        for label in
+            labels
+                .into_iter()
+                .chain(["Fit Horizontal", "Fit Vertical", "Center Origin", "5m..."])
+        {
+            let r = h.get_by_label(label).rect();
+            assert!(r.right() <= INITIAL_SIZE[0], "{label}: {r:?}");
+        }
     }
 }
+
 #[test]
 #[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
 fn snapshot_playback() {
@@ -1802,4 +1805,73 @@ fn time_cursor_line_drags_from_any_panel_without_a_handle() {
         egui::PointerButton::Primary,
     );
     assert_eq!(h.state().selected, Some((0, 8)));
+}
+
+#[test]
+fn map_requires_url_absolute_data_and_valid_origin() {
+    let mut h = harness(0);
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    assert!(h.state().map_disabled_reason().unwrap().contains("Options"));
+    h.state_mut().controller.settings.options.tile_url = "http://localhost/{z}/{x}/{y}".into();
+    h.run();
+    assert!(!h.get_by_label("Map").accesskit_node().is_disabled());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = true;
+    h.run();
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = false;
+    h.state_mut().controller.selection.difference = true;
+    h.run();
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    h.state_mut().controller.selection.difference = false;
+    h.state_mut().controller.settings.options.origin = 4;
+    h.state_mut().controller.dataset.as_mut().unwrap().base = None;
+    h.run();
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    for kind in [1, 2] {
+        let h = harness(kind);
+        assert!(h.query_by_label("Map").is_none());
+    }
+}
+
+#[test]
+fn map_draws_attribution_only_when_enabled_and_retains_preference() {
+    let server = crate::map::tests::Server::new();
+    let mut c = Controller::fixture(crate::reader::synthetic());
+    c.settings.options.tile_url = server.url.clone();
+    c.settings.options.tile_attribution = "Local test attribution".into();
+    let mut h = harness_with_controller(c);
+    assert!(h.query_by_label("Local test attribution").is_none());
+    h.get_by_label("Map").click();
+    h.run();
+    assert!(h.state().controller.settings.map);
+    assert!(h.query_by_label("Local test attribution").is_some());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = true;
+    h.run();
+    assert!(h.state().controller.settings.map);
+    assert!(h.query_by_label("Local test attribution").is_none());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = false;
+    h.run();
+    assert!(h.query_by_label("Local test attribution").is_some());
+    h.get_by_label("Map").click();
+    h.run();
+    assert!(h.query_by_label("Local test attribution").is_none());
+    // Let the owned requests finish before stopping the local server.
+    let ctx = h.ctx.clone();
+    crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
+}
+
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_map_localhost() {
+    let server = crate::map::tests::Server::new();
+    let mut c = Controller::fixture(crate::reader::synthetic());
+    c.settings.options.tile_url = server.url.clone();
+    c.settings.options.tile_attribution = "Local test attribution".into();
+    c.settings.map = true;
+    let mut h = harness_with_controller(c);
+    let ctx = h.ctx.clone();
+    crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
+    h.run();
+    save(&mut h, "snapshot_plot_map_localhost");
+    crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
 }

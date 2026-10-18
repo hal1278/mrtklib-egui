@@ -54,6 +54,8 @@ pub(crate) struct Options {
     pub y_range: f64,
     pub anim_cycle: i32,
     pub ref_cycle: u32,
+    pub tile_url: String,
+    pub tile_attribution: String,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -70,6 +72,8 @@ impl Default for Options {
             y_range: 5.0,
             anim_cycle: 10,
             ref_cycle: 100,
+            tile_url: String::new(),
+            tile_attribution: String::new(),
         }
     }
 }
@@ -86,6 +90,14 @@ impl Options {
             || self.llh[1].abs() > 180.0
         {
             return Err("origin requires latitude ±90°, longitude ±180°, and finite height".into());
+        }
+        if !self.tile_url.is_empty()
+            && (!(self.tile_url.starts_with("https://") || self.tile_url.starts_with("http://"))
+                || !["{z}", "{x}", "{y}"]
+                    .iter()
+                    .all(|field| self.tile_url.contains(field)))
+        {
+            return Err("Tile URL requires http:// or https:// and {z}, {x}, {y}".into());
         }
         Ok(())
     }
@@ -126,6 +138,7 @@ pub(crate) struct Settings {
     pub interval_percentages: bool,
     pub height: bool,
     pub cursor_llh: bool,
+    pub map: bool,
     pub options: Options,
 }
 impl Default for Settings {
@@ -140,6 +153,7 @@ impl Default for Settings {
             interval_percentages: false,
             height: false,
             cursor_llh: false,
+            map: false,
             options: Options::default(),
         }
     }
@@ -243,10 +257,13 @@ mod tests {
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("plot.json");
         assert_eq!(load(&path).unwrap(), Settings::default());
+        assert!(Options::default().tile_url.is_empty());
+        assert!(Options::default().tile_attribution.is_empty());
         let s = Settings {
             last_file: Some("入力.pos".into()),
             last_file2: Some("比較.pos".into()),
             plot: 2,
+            map: true,
             manual_rates: vec![ManualRate {
                 path: "入力.pos".into(),
                 hz: 1.0,
@@ -261,6 +278,8 @@ mod tests {
                 y_range: 0.05,
                 anim_cycle: 20,
                 ref_cycle: 250,
+                tile_url: "http://localhost/{z}/{x}/{y}".into(),
+                tile_attribution: "Local test tiles".into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -269,6 +288,9 @@ mod tests {
         assert_eq!(load(&path).unwrap(), s);
         std::fs::write(&path, r#"{"quality":6}"#).unwrap();
         let migrated = load(&path).unwrap();
+        assert!(!migrated.map);
+        assert!(migrated.options.tile_url.is_empty());
+        assert!(migrated.options.tile_attribution.is_empty());
         assert_eq!(migrated.options.anim_cycle, 10);
         assert_eq!(migrated.options.ref_cycle, 100);
         assert!(migrated.qualities.visible(6));
@@ -281,6 +303,7 @@ mod tests {
             r#"{"options":{"y_range":0}}"#,
             r#"{"options":{"ref_cycle":-1}}"#,
             r#"{"options":{"anim_cycle":1.5}}"#,
+            r#"{"options":{"tile_url":"http://localhost/no-template"}}"#,
         ] {
             std::fs::write(&path, text).unwrap();
             assert!(load(&path).is_err());

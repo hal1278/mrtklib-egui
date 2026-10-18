@@ -286,6 +286,21 @@ impl Controller {
         self.settings.plot <= 1
             && (0..2).all(|i| self.dataset_at(i).is_some_and(|d| !d.points.is_empty()))
     }
+    /// Shared by the off-point status coordinates and the map layer.
+    pub fn absolute_origin(&self) -> Result<data::Origin, String> {
+        let sel = self.selection;
+        if sel.difference {
+            return Err("Map unavailable for difference data".into());
+        }
+        if !sel.data.contains(&true)
+            || !(0..2)
+                .filter(|&slot| sel.data[slot])
+                .all(|slot| self.dataset_at(slot).is_some_and(|d| !d.relative))
+        {
+            return Err("Map requires absolute solution data".into());
+        }
+        self.origin(&self.settings.options)
+    }
     pub fn origin(&self, options: &Options) -> Result<data::Origin, String> {
         options.validate()?;
         if options.origin == 5 {

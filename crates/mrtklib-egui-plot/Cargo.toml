@@ -13,7 +13,12 @@ egui_plot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 mrtklib-egui-supervisor = { path = "../mrtklib-egui-supervisor" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# The no-provider API is explicitly configured with ring and native roots below.
+# Pin ureq because this TLS configuration API is not semver-stable.
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 
 [dev-dependencies]
 egui_kittest = { version = "=0.36.2", default-features = false, features = ["wgpu"] }
-image = { version = "0.25", default-features = false, features = ["png"] }

@@ -2,7 +2,7 @@
 use crate::{
     controller::Controller,
     data::{self, Sample},
-    grid,
+    grid, map,
     navigation::{self, Area, Bounds, DragMode, Range, Target as ViewTarget, Viewport},
     playback::{Fixes, Playback},
     settings::{ORIGIN_RANGES, ORIGINS, Options, PLOTS, SIZES},
@@ -39,6 +39,7 @@ pub(crate) struct PlotApp {
     info_open: bool,
     errors: Vec<String>,
     rate_drafts: [String; 2],
+    tiles: map::TileLayer,
 }
 #[derive(Clone, Copy)]
 struct Geometry {
@@ -143,10 +144,14 @@ impl PlotApp {
             info_open: false,
             errors: Vec::new(),
             rate_drafts: Default::default(),
+            tiles: Default::default(),
         }
     }
     fn update_logic(&mut self, ctx: &egui::Context) {
         self.remember_error();
+        self.tiles
+            .configure(&self.controller.settings.options.tile_url);
+        self.tiles.poll(ctx);
         self.controller.poll();
         if let Some((slot, dialog)) = &self.dialog {
             let slot = *slot;
@@ -789,11 +794,14 @@ impl PlotApp {
                     )
                     .clicked()
                 {
+                    self.tiles.reset();
                     self.controller.reload();
                     ui.close();
                 }
                 if ui.button("Clear").clicked() {
                     self.discard_dialog = self.dialog.is_some();
+                    self.tiles.reset();
+                    self.tiles.errors.clear();
                     self.controller.clear();
                     self.errors.clear();
                     ui.close();
@@ -944,6 +952,17 @@ impl PlotApp {
                 {
                     self.controller.settings.qualities.0[q] = !visible;
                 }
+            }
+            if self.controller.settings.plot == 0 {
+                let reason = self.map_disabled_reason();
+                let response = ui.add_enabled(
+                    reason.is_none(),
+                    egui::Button::new("Map").selected(self.controller.settings.map),
+                );
+                if response.clicked() {
+                    self.controller.settings.map = !self.controller.settings.map;
+                }
+                response.on_disabled_hover_text(reason.unwrap_or_default());
             }
             self.playback_controls(ui);
             if icon_button(ui, "Fit Horizontal", 0).clicked() {
@@ -1178,6 +1197,12 @@ impl PlotApp {
                         );
                         ui.end_row();
                     }
+                    left_label(ui, "Tile URL ({z}/{x}/{y})");
+                    ui.add(egui::TextEdit::singleline(&mut draft.tile_url).password(true));
+                    ui.end_row();
+                    left_label(ui, "Tile attribution");
+                    ui.text_edit_singleline(&mut draft.tile_attribution);
+                    ui.end_row();
                     left_label(ui, "Center Origin Y-range ±");
                     ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1));
                     ui.end_row();
@@ -1275,19 +1300,10 @@ impl PlotApp {
                 // Off the points RTKPLOT shows the cursor's latitude and longitude about the
                 // origin (`plotinfo.cpp:388-392`); relative or difference data have no position.
                 // Every shown dataset must be absolute; the origin itself comes from Solution 1.
-                let sel = self.controller.selection;
-                let shown_absolute = (0..2).filter(|&slot| sel.data[slot]).all(|slot| {
-                    self.controller
-                        .dataset_at(slot)
-                        .is_some_and(|d| !d.relative)
+                let llh = self.controller.absolute_origin().ok().map(|origin| {
+                    let llh = ecef_to_llh(enu_to_ecef([x, y, 0.0], origin.position));
+                    latlon_text(llh, o.dms)
                 });
-                let llh = (!sel.difference && sel.data.contains(&true) && shown_absolute)
-                    .then(|| self.controller.origin(o).ok())
-                    .flatten()
-                    .map(|origin| {
-                        let llh = ecef_to_llh(enu_to_ecef([x, y, 0.0], origin.position));
-                        latlon_text(llh, o.dms)
-                    });
                 return self.coordinates("", llh, format!("E={x:.4} N={y:.4} m"), "");
             } else {
                 let (label, unit) = if self.controller.settings.plot == 1 {
@@ -1401,6 +1417,7 @@ impl PlotApp {
     }
     fn info_items(&self) -> Vec<(bool, String)> {
         let mut items = Vec::new();
+        items.extend(self.tiles.errors.iter().cloned().map(|e| (true, e)));
         for e in &self.errors {
             items.push((true, e.clone()));
         }
@@ -1468,6 +1485,13 @@ impl PlotApp {
                     }
                 });
             });
+    }
+    fn map_disabled_reason(&self) -> Option<String> {
+        if self.controller.settings.options.tile_url.is_empty() {
+            Some("Set a tile URL in Options to enable Map".into())
+        } else {
+            self.controller.absolute_origin().err()
+        }
     }
     fn graphs(&mut self, ui: &mut egui::Ui) {
         if (0..2).all(|slot| {
@@ -1614,6 +1638,10 @@ impl PlotApp {
         let cursor_time = self.cursor_time();
         let fixes = self.fixes();
         let current = self.current_sample();
+        let map_origin = (kind == 0 && self.controller.settings.map && !o.tile_url.is_empty())
+            .then(|| self.controller.absolute_origin().ok())
+            .flatten();
+        let tiles = &mut self.tiles;
         let viewport = &mut self.viewport;
         let response = plot.show(ui, |pui| {
             if kind == 0
@@ -1638,6 +1666,16 @@ impl PlotApp {
                 [bounds.x.min, bounds.y.min],
                 [bounds.x.max, bounds.y.max],
             ));
+            if let Some(origin) = &map_origin {
+                for image in tiles.images(
+                    &ctx,
+                    origin.position,
+                    bounds,
+                    f64::from(pui.response().rect.width() * ctx.pixels_per_point()),
+                ) {
+                    pui.image(image);
+                }
+            }
             pui.add(grid::Grid::new(kind != 0 && !o.week_time));
             for source in 0..3 {
                 let start = samples.partition_point(|s| s.source < source);
@@ -1697,6 +1735,35 @@ impl PlotApp {
                 );
             }
         });
+        if map_origin.is_some() && !o.tile_attribution.is_empty() {
+            let rect = *response.transform.frame();
+            let attribution = mask(&o.tile_attribution, &[]);
+            let galley = ui.painter().layout_no_wrap(
+                attribution.clone(),
+                egui::TextStyle::Small.resolve(ui.style()),
+                Color32::BLACK,
+            );
+            let rect = egui::Rect::from_min_size(
+                rect.right_bottom() - galley.size() - egui::vec2(6.0, 6.0),
+                galley.size() + egui::vec2(4.0, 4.0),
+            );
+            ui.painter()
+                .with_clip_rect(*response.transform.frame())
+                .rect_filled(rect, 0.0, Color32::from_white_alpha(220));
+            ui.scope(|ui| {
+                ui.set_clip_rect(*response.transform.frame());
+                ui.put(
+                    rect,
+                    egui::Label::new(
+                        egui::RichText::new(attribution)
+                            .small()
+                            .color(Color32::BLACK),
+                    )
+                    .extend()
+                    .selectable(false),
+                );
+            });
+        }
         if response.response.hovered()
             && let Some(pointer) = response.response.hover_pos()
         {
