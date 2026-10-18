@@ -1066,3 +1066,30 @@ fn absolute_height_statistics_omit_rms_about_zero() {
         "[1] AVE=2.0000  STD=1.4142 m"
     );
 }
+
+#[test]
+fn data2_mark_follows_the_selected_data1_epoch_within_twice_dttol() {
+    let mut c = two_solutions(0);
+    c.selection.data = [true, true];
+    c.rebuild();
+    let samples = &c.samples;
+    let data1: Vec<_> = samples.iter().filter(|s| s.source == 0).collect();
+    for s in [data1[0], data1[data1.len() - 1]] {
+        let marks = selected_marks(samples, Some((0, s.index)));
+        assert_eq!(marks.len(), 2);
+        let companion = &samples[marks[1]];
+        assert_eq!(companion.source, 1);
+        assert!((companion.time - s.time).abs() < 0.05);
+    }
+    let first2 = samples.iter().find(|s| s.source == 1).unwrap().index;
+    assert_eq!(selected_marks(samples, Some((1, first2))).len(), 1);
+    let mut far = two_solutions(0);
+    for p in &mut far.dataset2.as_mut().unwrap().points {
+        p.time += 0.05;
+        p.time_ns += 50_000_000;
+    }
+    far.selection.data = [true, true];
+    far.rebuild();
+    let first1 = far.samples.iter().find(|s| s.source == 0).unwrap().index;
+    assert_eq!(selected_marks(&far.samples, Some((0, first1))).len(), 1);
+}

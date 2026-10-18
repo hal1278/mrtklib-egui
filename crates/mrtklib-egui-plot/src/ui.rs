@@ -1192,9 +1192,7 @@ impl PlotApp {
                     }
                 }
             }
-            if let Some(i) =
-                selected.and_then(|index| samples.iter().position(|s| (s.source, s.index) == index))
-            {
+            for i in selected_marks(samples, selected) {
                 pui.points(
                     Points::new("selected epoch", vec![values[i]])
                         .radius((o.mark_size as f32 / 2.0 + 3.0).max(4.0))
@@ -1490,6 +1488,28 @@ fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {
     }
 }
 
+/// Indices of the selected epoch and, when it belongs to Data 1, of the Data 2 epoch
+/// within RTKPLOT's 2*DTTOL of its time (`plotdraw.cpp:186,675`). RTKPLOT keeps a separate,
+/// stale Data 2 index; following the Data 1 time keeps the Data 2 mark with the selection.
+fn selected_marks(samples: &[Sample], selected: Option<(usize, usize)>) -> Vec<usize> {
+    let Some(i) =
+        selected.and_then(|index| samples.iter().position(|s| (s.source, s.index) == index))
+    else {
+        return vec![];
+    };
+    let time = samples[i].time;
+    let companion = (samples[i].source == 0)
+        .then(|| {
+            samples
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.source == 1 && (s.time - time).abs() < 0.05)
+                .min_by(|a, b| (a.1.time - time).abs().total_cmp(&(b.1.time - time).abs()))
+                .map(|(j, _)| j)
+        })
+        .flatten();
+    std::iter::once(i).chain(companion).collect()
+}
 /// RTKPLOT's time-plot statistics (`DrawSolStat`); RMS is about zero.
 fn component_statistics(label: &str, values: &[f64], rms: bool) -> String {
     let s = statistics(values);
