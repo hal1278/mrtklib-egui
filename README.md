@@ -39,6 +39,8 @@ cargo build --release -p mrtklib-egui-navi
 
 The executable is `target/release/mrtklib-egui-navi`. A first release build takes about 10 minutes on a 12-thread desktop CPU.
 
+For smaller executables to hand to others, build with `cargo build --profile dist -p <crate>` instead; the result is in `target/dist/`. The build takes longer.
+
 ## Run navi
 
 Navi uses the `mrtk` next to its own executable and keeps its settings in that directory. To keep the build tree clean, select both with environment variables instead:

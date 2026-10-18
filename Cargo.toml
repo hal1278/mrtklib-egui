@@ -23,3 +23,11 @@ mrtklib-egui-mock = { path = "crates/mrtklib-egui-mock" }
 
 mrtklib-egui-plotkit = { path = "crates/mrtklib-egui-plotkit" }
 egui_plot = "=0.37.0"
+
+# Smaller executables for distribution, without changing the everyday release build:
+# whole-program LTO in one codegen unit, and no symbol table (see docs/design.md).
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
