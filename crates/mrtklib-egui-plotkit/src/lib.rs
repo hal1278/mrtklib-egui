@@ -74,6 +74,19 @@ pub fn ecef_to_enu(position: [f64; 3], origin: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// Inverse of [`ecef_to_enu`]: ECEF position of a local ENU offset from `origin`.
+pub fn enu_to_ecef(enu: [f64; 3], origin: [f64; 3]) -> [f64; 3] {
+    let [lat, lon, _] = ecef_to_llh(origin);
+    let (s, c) = lat.to_radians().sin_cos();
+    let (sl, cl) = lon.to_radians().sin_cos();
+    let [e, n, u] = enu;
+    [
+        origin[0] - sl * e - s * cl * n + c * cl * u,
+        origin[1] + cl * e - s * sl * n + c * sl * u,
+        origin[2] + c * n + s * u,
+    ]
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Statistics {
     pub average: f64,
@@ -96,11 +109,13 @@ pub fn statistics(values: &[f64]) -> Statistics {
         rms: (values.iter().map(|v| v * v).sum::<f64>() / n).sqrt(),
     }
 }
-pub fn horizontal_2d(values: &[[f64; 3]]) -> f64 {
+/// RMS of the horizontal distance sqrt(E^2+N^2) about the origin. RTKPLOT labels twice this
+/// value `2D`; that name and the factor are ambiguous, so only the plain RMS is given.
+pub fn horizontal_rms(values: &[[f64; 3]]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    2.0 * (values
+    (values
         .iter()
         .map(|v| v[0] * v[0] + v[1] * v[1])
         .sum::<f64>()
@@ -140,7 +155,16 @@ mod tests {
         assert_eq!(ecef_to_enu([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]), [0.0; 3]);
     }
     #[test]
-    fn sample_statistics_and_rtkplot_2d() {
+    fn enu_to_ecef_inverts_ecef_to_enu() {
+        let origin = llh_to_ecef([35.6, 139.7, 40.0]);
+        let enu = [120.5, -33.25, 7.0];
+        let back = ecef_to_enu(enu_to_ecef(enu, origin), origin);
+        for i in 0..3 {
+            close(back[i], enu[i], 1e-8);
+        }
+    }
+    #[test]
+    fn sample_statistics_and_horizontal_rms() {
         assert_eq!(statistics(&[]), Statistics::default());
         assert_eq!(
             statistics(&[3.0]),
@@ -154,7 +178,7 @@ mod tests {
         close(s.average, 2.0, 1e-12);
         close(s.std, 2.0_f64.sqrt(), 1e-12);
         close(s.rms, 5.0_f64.sqrt(), 1e-12);
-        assert_eq!(horizontal_2d(&[[3.0, 4.0, 99.0]]), 10.0);
-        assert_eq!(horizontal_2d(&[]), 0.0);
+        assert_eq!(horizontal_rms(&[[3.0, 4.0, 99.0]]), 5.0);
+        assert_eq!(horizontal_rms(&[]), 0.0);
     }
 }

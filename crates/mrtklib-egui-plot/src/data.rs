@@ -72,9 +72,28 @@ pub(crate) struct Sample {
     pub source: usize,
     pub index: usize,
     pub time: f64,
+    pub time_ns: i128,
     pub enu: [f64; 3],
     pub quality: u8,
+    pub height: Option<f64>,
+    pub vertical: Option<f64>,
     pub nsat: [f64; 3],
+}
+impl Sample {
+    pub fn component(&self, component: usize) -> Option<f64> {
+        if component == 2 {
+            self.vertical
+        } else {
+            Some(self.enu[component])
+        }
+    }
+    pub fn set_vertical(&mut self, height: bool) {
+        self.vertical = if height {
+            self.height
+        } else {
+            Some(self.enu[2])
+        };
+    }
 }
 #[cfg(test)]
 pub(crate) fn samples(
@@ -94,7 +113,8 @@ pub(crate) fn samples_with_origin(
     origin: Option<&Origin>,
     quality: u8,
 ) -> Vec<Sample> {
-    data.points
+    let mut samples: Vec<_> = data
+        .points
         .iter()
         .enumerate()
         .filter(|(_, p)| quality == 0 || p.quality == quality)
@@ -102,26 +122,34 @@ pub(crate) fn samples_with_origin(
             source: 0,
             index,
             time: p.time,
+            time_ns: p.time_ns,
             enu: if data.relative {
                 p.position
             } else {
                 origin.map_or(p.position, |o| ecef_to_enu(p.position, o.at(p.time)))
             },
+            height: (!data.relative).then(|| mrtklib_egui_plotkit::ecef_to_llh(p.position)[2]),
+            vertical: None,
             quality: p.quality,
             nsat: [f64::from(p.satellites), p.age, p.ratio],
         })
-        .collect()
+        .collect();
+    for sample in &mut samples {
+        sample.set_vertical(false);
+    }
+    samples
 }
 /// RTKPLOT TIMEPOS::diff: ordered, one-to-one matches within default TTOL.
 pub(crate) fn difference(a: &[Sample], b: &[Sample], quality: u8) -> Vec<Sample> {
-    const TTOL: f64 = 0.025;
+    const TTOL_NS: i128 = 25_000_000;
     let (mut i, mut j) = (0, 0);
     let mut result = Vec::new();
     while i < a.len() && j < b.len() {
-        let dt = a[i].time - b[j].time;
-        if dt < -TTOL {
+        // Preserve the inclusive boundary without subtracting large f64 epochs.
+        let dt = a[i].time_ns - b[j].time_ns;
+        if dt < -TTOL_NS {
             i += 1;
-        } else if dt > TTOL {
+        } else if dt > TTOL_NS {
             j += 1;
         } else {
             let q = a[i].quality.max(b[j].quality);
@@ -129,6 +157,8 @@ pub(crate) fn difference(a: &[Sample], b: &[Sample], quality: u8) -> Vec<Sample>
                 result.push(Sample {
                     source: 2,
                     enu: std::array::from_fn(|k| a[i].enu[k] - b[j].enu[k]),
+                    height: a[i].height.zip(b[j].height).map(|(a, b)| a - b),
+                    vertical: a[i].vertical.zip(b[j].vertical).map(|(a, b)| a - b),
                     quality: q,
                     ..a[i].clone()
                 });
@@ -171,14 +201,40 @@ mod tests {
     use super::*;
     use mrtklib_egui_plotkit::SolutionPoint;
     #[test]
+    fn height_component_is_absolute_independent_of_origin_and_difference_subtracts_it() {
+        let mut d = dataset();
+        d.points[0].position = llh_to_ecef([35.0, 139.0, 100.0]);
+        d.points[1].position = llh_to_ecef([35.0, 139.0, 103.0]);
+        let mut a = samples(&d, &Options::default(), 0).unwrap();
+        for s in &mut a {
+            s.set_vertical(true);
+        }
+        assert!((a[0].component(2).unwrap() - 100.0).abs() < 1e-5);
+        assert!((a[1].component(2).unwrap() - 103.0).abs() < 1e-5);
+        assert!((a[0].enu[2] - a[0].height.unwrap()).abs() > 1.0);
+        let mut b = a.clone();
+        b[0].height = Some(90.0);
+        let mut delta = difference(&a, &b, 0);
+        delta[0].set_vertical(true);
+        assert!((delta[0].component(2).unwrap() - 10.0).abs() < 1e-5);
+        d.relative = true;
+        let mut relative = samples(&d, &Options::default(), 0).unwrap();
+        relative[0].set_vertical(true);
+        assert_eq!(relative[0].component(2), None);
+        relative[0].set_vertical(false);
+        assert_eq!(relative[0].component(2), Some(d.points[0].position[2]));
+    }
+    #[test]
     fn difference_matches_once_without_interpolation_and_filters_the_larger_q() {
         let mut a = samples(&dataset(), &Options::default(), 0).unwrap();
         let mut b = a.clone();
         a[0].quality = 1;
         b[0].quality = 5;
         b[0].time += 0.024;
+        b[0].time_ns += 24_000_000;
         b[0].enu[0] -= 3.0;
         b[1].time += 0.026;
+        b[1].time_ns += 26_000_000;
         b[2].quality = 1;
         b[2].enu[2] += 2.0;
         let d = difference(&a, &b, 0);
@@ -191,10 +247,42 @@ mod tests {
         assert!(difference(&a, &b, 1).is_empty());
         // Duplicate timestamps are consumed one-to-one, in file order.
         a[1].time = a[0].time;
+        a[1].time_ns = a[0].time_ns;
         b[1].time = b[0].time;
+        b[1].time_ns = b[0].time_ns;
         assert_eq!(difference(&a, &b[..1], 0).len(), 1);
         assert_eq!(difference(&a, &b, 0).len(), 3);
         assert!(difference(&[], &b, 0).is_empty());
+    }
+    #[test]
+    fn difference_accepts_the_inclusive_25_ms_boundary_at_recent_gpst_epochs() {
+        let a = samples(&crate::reader::synthetic(), &Options::default(), 0).unwrap();
+        let a = &a[..1];
+        for sign in [-1, 1] {
+            for offset_ns in [25_000_000, 25_000_001, 25_001_000] {
+                let mut b = a.to_vec();
+                b[0].time += f64::from(sign) * offset_ns as f64 / 1e9;
+                b[0].time_ns += i128::from(sign) * offset_ns;
+                if offset_ns == 25_000_000 {
+                    assert!(
+                        (a[0].time - b[0].time).abs() > 0.025,
+                        "fixture must reproduce the f64 boundary error"
+                    );
+                }
+                let result = difference(a, &b, 0);
+                assert_eq!(
+                    result.len(),
+                    usize::from(offset_ns == 25_000_000),
+                    "offset {sign} * {offset_ns} ns"
+                );
+                if let Some(s) = result.first() {
+                    assert_eq!(
+                        (s.time, s.time_ns, s.index),
+                        (a[0].time, a[0].time_ns, a[0].index)
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn rtkplot_second_palette_uses_bgr_literals_and_difference_uses_first() {
@@ -220,19 +308,23 @@ mod tests {
     fn dataset() -> Dataset {
         Dataset {
             points: (0..3)
-                .map(|i| SolutionPoint {
-                    time: f64::from(i) * 100.0,
-                    position: [6_378_137.0, f64::from(i) * 10.0, 0.0],
-                    quality: i as u8 + 1,
-                    satellites: 12,
-                    age: 1.0,
-                    ratio: 3.0,
+                .map(|i| crate::reader::Epoch {
+                    time_ns: i128::from(i) * 100_000_000_000,
+                    point: SolutionPoint {
+                        time: f64::from(i) * 100.0,
+                        position: [6_378_137.0, f64::from(i) * 10.0, 0.0],
+                        quality: i as u8 + 1,
+                        satellites: 12,
+                        age: 1.0,
+                        ratio: 3.0,
+                    },
                 })
                 .collect(),
             base: Some([6_378_137.0, 0.0, 0.0]),
             relative: false,
             time_system: "GPST".into(),
             malformed: 0,
+            duplicates_removed: 0,
             warnings: vec![],
         }
     }

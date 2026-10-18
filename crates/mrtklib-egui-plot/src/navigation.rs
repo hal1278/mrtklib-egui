@@ -231,7 +231,7 @@ impl Viewport {
             return;
         }
         let ranges: [Option<Range>; 3] =
-            std::array::from_fn(|i| fit_component(samples.iter().map(|s| s.enu[i])));
+            std::array::from_fn(|i| fit_component(samples.iter().filter_map(|s| s.component(i))));
         if kind == 0 {
             if let (Some(x), Some(y)) = (ranges[0], ranges[1]) {
                 self.pending_track = Some(Bounds { x, y });

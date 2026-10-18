@@ -5,6 +5,7 @@ mod grid;
 mod navigation;
 mod reader;
 mod settings;
+mod summary;
 mod time;
 mod ui;
 

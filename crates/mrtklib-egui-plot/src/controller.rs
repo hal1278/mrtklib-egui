@@ -3,6 +3,7 @@ use crate::{
     data,
     reader::{self, Dataset},
     settings::{self, Options, Settings},
+    summary,
 };
 use std::{
     path::PathBuf,
@@ -47,7 +48,11 @@ pub(crate) struct Controller {
     pub selection: Selection,
     pub all_samples: [Vec<data::Sample>; 2],
     pub samples: Vec<data::Sample>,
+    /// Qualities of the shown samples before the quality filter (difference: matched Q).
+    pub present_qualities: [bool; 8],
     pub error: Option<String>,
+    pub file_errors: [Vec<String>; 2],
+    pub conversion_errors: [Option<String>; 2],
     pub loading: bool,
     pub revision: u64,
     /// Successful file loads are distinct from sample-only revisions.
@@ -85,7 +90,10 @@ impl Controller {
             selection: Selection::default(),
             all_samples: Default::default(),
             samples: vec![],
+            present_qualities: [false; 8],
             error,
+            file_errors: Default::default(),
+            conversion_errors: Default::default(),
             loading: false,
             revision: 0,
             load_revision: 0,
@@ -111,6 +119,63 @@ impl Controller {
         } else {
             self.settings.last_file2.clone()
         }
+    }
+    pub fn override_hz(&self, slot: usize) -> Option<f64> {
+        let path = self.last_file(slot)?;
+        self.settings
+            .manual_rates
+            .iter()
+            .find(|rate| rate.path == path)
+            .map(|rate| rate.hz)
+    }
+    pub fn rate(&self, slot: usize) -> Option<f64> {
+        let data = self.dataset_at(slot)?;
+        if data.points.len() < 2 {
+            return None;
+        }
+        self.override_hz(slot)
+            .or_else(|| summary::rate(data.points.iter().map(|p| p.time_ns)))
+    }
+    pub fn rate_text(&self, slot: usize) -> String {
+        let Some(hz) = self.rate(slot) else {
+            return "—".into();
+        };
+        let path = self.last_file(slot);
+        match self
+            .settings
+            .manual_rates
+            .iter()
+            .find(|rate| Some(&rate.path) == path.as_ref())
+        {
+            Some(rate) => format!(
+                "{} Hz (manual)",
+                rate.entered.clone().unwrap_or_else(|| hz.to_string())
+            ),
+            None => format!("{} Hz", summary::rate_text(hz)),
+        }
+    }
+    pub fn set_override_hz(&mut self, slot: usize, entered: Option<&str>) -> Result<(), String> {
+        let hz = entered
+            .map(|text| {
+                text.parse::<f64>()
+                    .ok()
+                    .filter(|hz| hz.is_finite() && *hz > 0.0)
+                    .ok_or("Rate must be positive and finite")
+            })
+            .transpose()?;
+        let path = self
+            .last_file(slot)
+            .ok_or("Open a file before setting its rate")?;
+        self.settings.manual_rates.retain(|rate| rate.path != path);
+        if let Some(hz) = hz {
+            self.settings.manual_rates.push(settings::ManualRate {
+                path,
+                hz,
+                entered: entered.map(str::to_owned),
+            });
+        }
+        self.persist();
+        Ok(())
     }
     pub fn open(&mut self, slot: usize, path: PathBuf) {
         self.start_read(vec![(slot, path)]);
@@ -175,11 +240,11 @@ impl Controller {
         if std::mem::take(&mut self.discard_pending) {
             return;
         }
-        let mut errors = Vec::new();
         let mut loaded = false;
         for (slot, path, result) in result {
             match result {
                 Ok(dataset) => {
+                    self.file_errors[slot].clear();
                     if slot == 0 {
                         self.dataset = Some(dataset);
                         self.settings.last_file = Some(path);
@@ -191,7 +256,11 @@ impl Controller {
                     self.selection.difference = false;
                     loaded = true;
                 }
-                Err(error) => errors.push(format!("Solution-{}: {error}", slot + 1)),
+                Err(error) => {
+                    if !self.file_errors[slot].contains(&error) {
+                        self.file_errors[slot].push(error);
+                    }
+                }
             }
         }
         self.error = None;
@@ -200,15 +269,8 @@ impl Controller {
             self.rebuild();
             self.persist();
         }
-        if !errors.is_empty() {
-            let error = errors.join("; ");
-            self.error = Some(
-                self.error
-                    .take()
-                    .map_or(error.clone(), |e| format!("{e}; {error}")),
-            );
-        }
     }
+
     pub fn toggle(&mut self, button: usize) {
         if button == 2 && !self.difference_available() {
             return;
@@ -235,42 +297,41 @@ impl Controller {
             .ok_or("An absolute Solution-1 is required for this coordinate origin")?;
         data::origin(dataset, options)
     }
-    fn converted(&self, options: &Options) -> Result<[Vec<data::Sample>; 2], String> {
-        let mut samples: [Vec<data::Sample>; 2] = Default::default();
-        for (slot, result) in samples.iter_mut().enumerate() {
+    fn converted(&self, options: &Options) -> [Result<Vec<data::Sample>, String>; 2] {
+        std::array::from_fn(|slot| {
             let Some(dataset) = self.dataset_at(slot) else {
-                continue;
+                return Ok(vec![]);
             };
             let origin = if dataset.relative || self.settings.plot == 2 {
                 None
             } else {
                 Some(self.origin(options)?)
             };
-            *result = data::samples_with_origin(dataset, origin.as_ref(), 0);
-            for sample in result {
+            let mut samples = data::samples_with_origin(dataset, origin.as_ref(), 0);
+            for sample in &mut samples {
                 sample.source = slot;
             }
-        }
-        Ok(samples)
+            Ok(samples)
+        })
     }
     pub fn rebuild(&mut self) {
         self.revision += 1;
         self.samples.clear();
         self.all_samples = Default::default();
-        match self.converted(&self.settings.options) {
-            Ok(samples) => self.all_samples = samples,
-            Err(e) => {
-                self.error = Some(e);
-                return;
+        self.conversion_errors = Default::default();
+        for (slot, result) in self
+            .converted(&self.settings.options)
+            .into_iter()
+            .enumerate()
+        {
+            match result {
+                Ok(samples) => self.all_samples[slot] = samples,
+                Err(error) => self.conversion_errors[slot] = Some(error),
             }
         }
         if self.selection.difference {
             if self.settings.plot != 2 {
-                self.samples = data::difference(
-                    &self.all_samples[0],
-                    &self.all_samples[1],
-                    self.settings.quality,
-                );
+                self.samples = data::difference(&self.all_samples[0], &self.all_samples[1], 0);
             }
         } else {
             self.samples = self
@@ -279,18 +340,25 @@ impl Controller {
                 .enumerate()
                 .filter(|(slot, _)| self.selection.data[*slot])
                 .flat_map(|(_, s)| s)
-                .filter(|s| self.settings.quality == 0 || s.quality == self.settings.quality)
                 .cloned()
                 .collect();
         }
+        self.present_qualities = [false; 8];
+        for s in &self.samples {
+            if let Some(present) = self.present_qualities.get_mut(usize::from(s.quality)) {
+                *present = true;
+            }
+        }
+        self.samples
+            .retain(|s| self.settings.qualities.visible(s.quality));
         // Plot coordinates are display times, so UTC ticks fall on round UTC times.
         for s in &mut self.samples {
+            s.set_vertical(self.settings.height);
             s.time = display_time(s.time, &self.settings.options);
         }
     }
     pub fn apply_options(&mut self, options: Options) -> Result<(), String> {
         options.validate()?;
-        self.converted(&options)?;
         self.settings.options = options;
         self.error = None;
         self.rebuild();
@@ -304,7 +372,10 @@ impl Controller {
         self.dataset = None;
         self.dataset2 = None;
         self.samples.clear();
+        self.present_qualities = [false; 8];
         self.all_samples = Default::default();
+        self.file_errors = Default::default();
+        self.conversion_errors = Default::default();
         self.settings.last_file = None;
         self.settings.last_file2 = None;
         self.error = None;
@@ -333,7 +404,10 @@ impl Controller {
             selection: Selection::default(),
             all_samples: Default::default(),
             samples: vec![],
+            present_qualities: [false; 8],
             error: None,
+            file_errors: Default::default(),
+            conversion_errors: Default::default(),
             loading: false,
             revision: 0,
             load_revision: 1,
@@ -402,6 +476,87 @@ mod tests {
         }
     }
     #[test]
+    fn an_origin_failure_only_removes_the_dataset_that_needs_it() {
+        for plot in [0, 1] {
+            for failing_slot in 0..2 {
+                let mut c = Controller::fixture(reader::synthetic());
+                c.dataset2 = Some(reader::synthetic());
+                let relative_slot = 1 - failing_slot;
+                let relative = if relative_slot == 0 {
+                    c.dataset.as_mut().unwrap()
+                } else {
+                    c.dataset2.as_mut().unwrap()
+                };
+                relative.relative = true;
+                for (i, p) in relative.points.iter_mut().enumerate() {
+                    p.position = [i as f64 * 0.02, 1.0, 0.0];
+                }
+                c.settings.plot = plot;
+                // Average Pos cannot derive an origin from relative Solution-1;
+                // Base Station fails for absolute Solution-1 without a base.
+                c.settings.options.origin = if failing_slot == 1 { 2 } else { 4 };
+                c.dataset.as_mut().unwrap().base = None;
+                c.selection.data = std::array::from_fn(|slot| slot == relative_slot);
+                c.rebuild();
+                let count = c.dataset_at(relative_slot).unwrap().points.len();
+                assert_eq!(c.samples.len(), count);
+                assert!(c.samples.iter().all(|s| s.source == relative_slot));
+                assert!(c.all_samples[failing_slot].is_empty());
+                assert!(c.conversion_errors[failing_slot].is_some());
+                assert!(c.conversion_errors[relative_slot].is_none());
+                c.toggle(failing_slot);
+                assert_eq!(
+                    c.samples.len(),
+                    count,
+                    "overlay must retain the valid dataset"
+                );
+                // A valid user origin recovers the failed slot and clears its error.
+                let options = Options {
+                    origin: 5,
+                    llh: [35.0, 139.0, 40.0],
+                    ..Default::default()
+                };
+                c.apply_options(options).unwrap();
+                assert!(c.conversion_errors.iter().all(Option::is_none));
+                assert_eq!(c.samples.len(), count * 2);
+                c.clear();
+                assert!(c.conversion_errors.iter().all(Option::is_none));
+            }
+        }
+    }
+    #[test]
+    fn applying_an_origin_unavailable_to_one_dataset_keeps_the_other_visible() {
+        let mut c = Controller::fixture(reader::synthetic());
+        c.dataset.as_mut().unwrap().relative = true;
+        c.dataset2 = Some(reader::synthetic());
+        let options = Options {
+            origin: 2,
+            utc: true,
+            ..Default::default()
+        };
+        c.apply_options(options.clone()).unwrap();
+        assert_eq!(c.settings.options, options);
+        assert_eq!(c.samples.len(), c.dataset.as_ref().unwrap().points.len());
+        assert!(c.conversion_errors[1].is_some());
+        let invalid = Options {
+            y_range: 0.0,
+            ..options.clone()
+        };
+        assert!(c.apply_options(invalid).is_err());
+        assert_eq!(c.settings.options, options);
+    }
+    #[test]
+    fn manual_rate_display_preserves_the_entered_precision() {
+        let mut c = Controller::fixture(reader::synthetic());
+        c.settings.last_file = Some("rate.pos".into());
+        assert_eq!(c.rate_text(0), "1.00 Hz");
+        c.set_override_hz(0, Some("20.0001")).unwrap();
+        assert_eq!(c.rate_text(0), "20.0001 Hz (manual)");
+        assert_eq!(c.rate(0), Some(20.0001));
+        c.set_override_hz(0, Some("1.0000")).unwrap();
+        assert_eq!(c.rate_text(0), "1.0000 Hz (manual)");
+    }
+    #[test]
     fn asynchronous_open_failure_retains_data_and_clear_discards_it() {
         let directory = std::env::temp_dir().join(format!(
             "plot-load-{}",
@@ -444,7 +599,12 @@ mod tests {
         c.poll();
         assert_eq!(c.dataset.as_ref().unwrap().points.len(), 1);
         assert_eq!(c.settings.last_file, Some(path));
-        assert!(c.error.as_ref().unwrap().contains("cannot open solution"));
+        assert!(
+            c.file_errors[0]
+                .last()
+                .unwrap()
+                .contains("cannot open solution")
+        );
         c.clear();
         assert!(c.dataset.is_none());
         assert!(c.dataset2.is_none());

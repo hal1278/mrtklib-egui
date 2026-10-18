@@ -1,5 +1,26 @@
 //! Civil calendar arithmetic only; no time-system or leap-second conversion.
 
+/// rtktrace src/analysis/gps_time.cpp:82–104: retain nine digits, round on digit ten.
+pub(crate) fn fractional_ns(digits: &str) -> Option<i128> {
+    let mut ns = 0;
+    let retained = digits.len().min(9);
+    for (index, digit) in digits.bytes().enumerate() {
+        if !digit.is_ascii_digit() {
+            return None;
+        }
+        if index < retained {
+            ns = ns * 10 + i128::from(digit - b'0');
+        }
+    }
+    for _ in retained..9 {
+        ns *= 10;
+    }
+    if digits.len() > 9 && digits.as_bytes()[9] >= b'5' {
+        ns += 1;
+    }
+    Some(ns)
+}
+
 fn leap(year: i32) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
@@ -91,6 +112,19 @@ pub(crate) fn format(seconds: f64, week: bool, date: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rtktrace_fraction_rounding_retains_nine_digits_and_carries() {
+        for (digits, expected) in [
+            ("", 0),
+            ("005", 5_000_000),
+            ("1234567894", 123_456_789),
+            ("1234567895", 123_456_790),
+            ("9999999995", 1_000_000_000),
+        ] {
+            assert_eq!(fractional_ns(digits), Some(expected));
+        }
+        assert_eq!(fractional_ns("00x"), None);
+    }
     #[test]
     fn calendar_and_week_share_axis_without_system_conversion() {
         assert_eq!(calendar("1980/01/06", "00:00:00"), Some(0.0));

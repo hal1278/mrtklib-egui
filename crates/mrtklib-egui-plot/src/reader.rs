@@ -3,13 +3,32 @@ use mrtklib_egui_plotkit::leap::utc_to_gpst;
 use mrtklib_egui_plotkit::{SolutionPoint, llh_to_ecef};
 use std::{io::BufRead, path::Path};
 
+/// Keep exact file timestamp precision for rtktrace statistics; plots still use f64 seconds.
+#[derive(Clone, Debug)]
+pub(crate) struct Epoch {
+    pub point: SolutionPoint,
+    pub time_ns: i128,
+}
+impl std::ops::Deref for Epoch {
+    type Target = SolutionPoint;
+    fn deref(&self) -> &SolutionPoint {
+        &self.point
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for Epoch {
+    fn deref_mut(&mut self) -> &mut SolutionPoint {
+        &mut self.point
+    }
+}
 #[derive(Clone, Debug)]
 pub(crate) struct Dataset {
-    pub points: Vec<SolutionPoint>,
+    pub points: Vec<Epoch>,
     pub base: Option<[f64; 3]>,
     pub relative: bool,
     pub time_system: String,
     pub malformed: usize,
+    pub duplicates_removed: usize,
     pub warnings: Vec<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,7 +163,7 @@ impl Layout {
         }
         Some(llh_to_ecef(p))
     }
-    fn row(&self, line: &str, calendar: bool) -> Option<SolutionPoint> {
+    fn row(&self, line: &str, calendar: bool) -> Option<Epoch> {
         let f: Vec<_> = line.split_whitespace().collect();
         let dms = self.coordinates == Coordinates::Dms;
         let count = if dms { 19 } else { 15 } + if self.velocity { 9 } else { 0 };
@@ -168,6 +187,19 @@ impl Layout {
             "JST" => utc_to_gpst(time - 9.0 * 3600.0),
             _ => time,
         };
+        let (whole_text, fraction) = f[1].split_once('.').unwrap_or((f[1], ""));
+        let whole = if calendar {
+            crate::time::calendar(f[0], whole_text)?
+        } else {
+            f64::from(f[0].parse::<u32>().ok()?) * 604800.0
+                + f64::from(whole_text.parse::<u32>().ok()?)
+        };
+        let whole = match self.time_system.as_str() {
+            "UTC" => utc_to_gpst(whole),
+            "JST" => utc_to_gpst(whole - 9.0 * 3600.0),
+            _ => whole,
+        };
+        let time_ns = whole as i128 * 1_000_000_000 + crate::time::fractional_ns(fraction)?;
         let position = self.position(&f[2..], false)?;
         let q = if dms { 9 } else { 5 };
         let quality: u8 = f[q].parse().ok()?;
@@ -179,13 +211,16 @@ impl Layout {
         for field in &f[q + 2..] {
             number(field)?;
         }
-        Some(SolutionPoint {
-            time,
-            position,
-            quality,
-            satellites,
-            age: number(f[q + 8])?,
-            ratio: number(f[q + 9])?,
+        Some(Epoch {
+            time_ns,
+            point: SolutionPoint {
+                time,
+                position,
+                quality,
+                satellites,
+                age: number(f[q + 8])?,
+                ratio: number(f[q + 9])?,
+            },
         })
     }
 }
@@ -226,6 +261,7 @@ fn parse_with_time_layout(
         relative: false,
         time_system: String::new(),
         malformed: 0,
+        duplicates_removed: 0,
         warnings: vec![],
     };
     let mut before_heading = 0;
@@ -311,8 +347,24 @@ fn parse_with_time_layout(
             dataset.warnings.push("Reference position could not be read; Base Station origin is unavailable (reference separators must also be whitespace)".into());
         }
     }
-    // Stable ordering retains duplicate epochs; no data is discarded or merged.
-    dataset.points.sort_by(|a, b| a.time.total_cmp(&b.time));
+    // Preserve original file order when choosing one epoch per <=1 ms cluster.
+    let mut sorted: Vec<_> = std::mem::take(&mut dataset.points)
+        .into_iter()
+        .enumerate()
+        .collect();
+    sorted.sort_by_key(|(_, epoch)| epoch.time_ns);
+    dataset.points = sorted
+        .chunk_by(|a, b| b.1.time_ns - a.1.time_ns <= 1_000_000)
+        .map(|group| {
+            dataset.duplicates_removed += group.len() - 1;
+            group
+                .iter()
+                .min_by_key(|(file_index, _)| file_index)
+                .unwrap()
+                .1
+                .clone()
+        })
+        .collect();
     Ok(dataset)
 }
 
@@ -356,6 +408,56 @@ mod tests {
             text
         };
         parse(text.as_bytes()).unwrap()
+    }
+    #[test]
+    fn duplicate_removal_keeps_the_first_in_the_file_after_sorting() {
+        let mut text = format!("% GPST {LLH}\n");
+        for (clock, quality) in [
+            ("02.000000", 6),
+            ("00.000000", 1),
+            ("01.000000", 2),
+            ("01.000000", 3),
+            ("01.001000", 4),
+            ("01.002001", 5),
+            ("01.999500", 1),
+        ] {
+            text.push_str(&format!(
+                "2024/08/22 11:00:{clock} 35 139 40 {quality} 15 .1 .2 .3 0 0 0 1 3\n"
+            ));
+        }
+        let d = parse(text.as_bytes()).unwrap();
+        assert_eq!(
+            d.points.iter().map(|p| p.quality).collect::<Vec<_>>(),
+            [1, 2, 5, 6]
+        );
+        assert_eq!(d.duplicates_removed, 3);
+        assert!(
+            d.points
+                .windows(2)
+                .all(|p| p[1].time_ns - p[0].time_ns > 1_000_000)
+        );
+        assert_eq!(d.malformed, 0);
+    }
+    #[test]
+    fn exact_decimal_timestamps_preserve_high_rate_intervals() {
+        for (system, calendar) in [("GPST", true), ("UTC", true), ("JST", false)] {
+            let mut text = format!("% {system} {LLH}\n");
+            for seconds in ["00.000", "00.005", "00.010"] {
+                let stamp = if calendar {
+                    format!("2024/08/22 11:00:{seconds}")
+                } else {
+                    format!("2328 3852{seconds}")
+                };
+                text.push_str(&format!("{stamp} 35 139 40 1 15 .1 .2 .3 0 0 0 1 3\n"));
+            }
+            let d = parse(text.as_bytes()).unwrap();
+            assert_eq!(d.points.len(), 3);
+            assert_eq!(d.points[1].time_ns - d.points[0].time_ns, 5_000_000);
+            assert_eq!(
+                crate::summary::rate(d.points.iter().map(|p| p.time_ns)),
+                Some(200.0)
+            );
+        }
     }
     #[test]
     fn writer_layouts_and_time_systems() {
@@ -464,7 +566,8 @@ mod tests {
         for (first, second) in [(calendar, tow), (tow, calendar)] {
             let text = format!("% GPST {LLH}\nbroken\n{first}\n{second}\n{first}\n");
             let d = parse(text.as_bytes()).unwrap();
-            assert_eq!(d.points.len(), 2);
+            assert_eq!(d.points.len(), 1);
+            assert_eq!(d.duplicates_removed, 1);
             assert_eq!(d.malformed, 2);
         }
     }
