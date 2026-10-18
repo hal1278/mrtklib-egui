@@ -283,11 +283,15 @@ MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
 
 - On Nix/NixOS, rfd needs `libdbus-1.so.3` (or `libdbus-1.so`) at run time for xdg-portal dialogs. The shared Nix runtime library list includes `pkgs.dbus.lib`, both in the executable run paths for `nix run` and in the development shell's `LD_LIBRARY_PATH`, so this dependency is available without a separate launcher setting.
 - Linux and Windows are targets. Development and first verification happen on Linux. `mrtk run` works on Windows only after the MRTKLIB Windows port reaches the stream layer.
+- On Windows the wgpu renderer uses only the DX12 backend by default; `WGPU_BACKEND` (for example `gl` or `vulkan`) overrides it. wgpu enumerates every enabled backend at startup, and with Vulkan enabled an Intel Vulkan driver (`igvk64.dll`) crashed the process before a window opened, while DX12 and GL both worked. DX12 is part of every Windows version MRTKLIB's Windows port supports (Windows 10 version 1903 and later); only GPUs older than about 2012 lack a DX12 driver, and machines without a GPU get the WARP software adapter. GL is left out of the default, because it does not help machines without a GPU (OpenGL 1.1 only) and it would add a second adapter to choose from.
 - macOS is a future target. It is not verified or guaranteed, because there is no test environment. Libraries and threading choices must not exclude it.
 
 ## Distribution
 
 - Releases are archives on GitHub Releases, without an installer.
+- Binary archives are zip files for Windows only. Linux users build from source (the README), because a Linux binary is tied to the glibc version it was built against. macOS has no binary release.
+- Each application stays a separate executable, as RTKLIB ships one executable per application.
+- Release executables are built with the `dist` profile: the `release` profile plus `lto = "fat"`, `codegen-units = 1` and `strip = "symbols"`. LTO and a single codegen unit only slow the build; stripping removes the symbol table that `release` keeps. The everyday `release` build is unchanged so that rebuilding after a change stays fast. Without symbols a panic backtrace shows no function names; whether to keep separate debug information for crash reports is decided with the first binary release.
 - The license is `BSD-2-Clause OR MIT OR Apache-2.0`. The bundled `mrtk` carries the MRTKLIB BSD-2-Clause notice.
 - Dependencies compiled into the applications must have permissive licenses compatible with distributing the applications under `BSD-2-Clause OR MIT OR Apache-2.0`. When a crate offers alternatives, such as `Apache-2.0 OR GPL-2.0-only`, the permissive alternative applies. Copyleft crates are avoided in dev-dependencies too: `egui_kittest` uses only `wgpu`, leaving out `snapshot` because it pulls an MPL-2.0 crate.
 - Binary releases include the license texts and copyright notices of all Rust dependencies compiled into the executables, generated from Cargo metadata at release time, in addition to the MRTKLIB notice above.
