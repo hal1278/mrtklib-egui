@@ -380,7 +380,8 @@ impl PlotApp {
         if !self.playback.show_track || count == 0 || !self.data_selected() {
             return;
         }
-        egui::Panel::bottom("time scroll").show(ui, |ui| {
+        // Below the toolbar, as RTKPLOT keeps it in the toolbar panel (`plotmain.dfm:1575-1697`).
+        egui::Panel::top("time scroll").show(ui, |ui| {
             let slot = self.controller.selection.primary();
             ui.horizontal(|ui| {
                 if ui
@@ -1781,6 +1782,7 @@ impl PlotApp {
     }
     fn draw(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("plot controls").show(ui, |ui| self.controls(ui));
+        self.time_scroll(ui);
         self.remember_error();
         egui::Panel::bottom("plot status").show(ui, |ui| {
             ui.horizontal_top(|ui| {
@@ -1883,7 +1885,6 @@ impl PlotApp {
         self.hovered = None;
         let previous_cursor = self.cursor;
         self.cursor = None;
-        self.time_scroll(ui);
         self.sync_selection();
         egui::CentralPanel::default().show(ui, |ui| self.graphs(ui));
         if previous_hover != self.hovered || previous_cursor != self.cursor {
