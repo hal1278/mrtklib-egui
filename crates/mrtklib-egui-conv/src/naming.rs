@@ -184,8 +184,13 @@ mod tests {
     fn root() -> PathBuf {
         std::env::temp_dir().join("conv-naming")
     }
+    /// `path` uses `/`; the expectation uses the platform separator, as the product does.
     fn expected(path: &str) -> String {
-        root().join(path).to_str().unwrap().to_owned()
+        path.split('/')
+            .fold(root(), |p, part| p.join(part))
+            .to_str()
+            .unwrap()
+            .to_owned()
     }
     fn fixture(input: &str) -> Settings {
         Settings {

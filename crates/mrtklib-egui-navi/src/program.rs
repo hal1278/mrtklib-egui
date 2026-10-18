@@ -68,13 +68,14 @@ mod tests {
             command.working_directory.as_deref(),
             Some(Path::new("/settings dir"))
         );
-        assert_eq!(
-            command.args.last().unwrap(),
-            "/settings dir/mrtklib-egui-navi.toml"
-        );
+        let config = Path::new("/settings dir").join("mrtklib-egui-navi.toml");
+        assert_eq!(command.args.last().unwrap(), config.as_os_str());
         assert_eq!(
             command.preview(),
-            "Working directory: \"/settings dir\" | Program: /dev/mrtk run --rpc-port 0 --no-console --exit-on-stdin-eof --config \"/settings dir/mrtklib-egui-navi.toml\""
+            format!(
+                "Working directory: \"/settings dir\" | Program: /dev/mrtk run --rpc-port 0 --no-console --exit-on-stdin-eof --config \"{}\"",
+                config.display()
+            )
         );
     }
 }
