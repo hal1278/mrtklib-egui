@@ -1881,15 +1881,15 @@ fn snapshot_map_localhost() {
     crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
 }
 
-fn rendered_text(h: &Harness<'_, PlotApp>) -> Vec<(egui::Pos2, String)> {
-    fn collect(shape: &egui::Shape, texts: &mut Vec<(egui::Pos2, String)>) {
+fn rendered_text_shapes<'a>(h: &'a Harness<'_, PlotApp>) -> Vec<&'a egui::epaint::TextShape> {
+    fn collect<'a>(shape: &'a egui::Shape, texts: &mut Vec<&'a egui::epaint::TextShape>) {
         match shape {
             egui::Shape::Vec(shapes) => {
                 for shape in shapes {
                     collect(shape, texts);
                 }
             }
-            egui::Shape::Text(text) => texts.push((text.pos, text.galley.text().to_owned())),
+            egui::Shape::Text(text) => texts.push(text),
             _ => {}
         }
     }
@@ -1898,6 +1898,12 @@ fn rendered_text(h: &Harness<'_, PlotApp>) -> Vec<(egui::Pos2, String)> {
         collect(&shape.shape, &mut texts);
     }
     texts
+}
+fn rendered_text(h: &Harness<'_, PlotApp>) -> Vec<(egui::Pos2, String)> {
+    rendered_text_shapes(h)
+        .into_iter()
+        .map(|t| (t.pos, t.galley.text().to_owned()))
+        .collect()
 }
 
 #[test]
@@ -2042,6 +2048,11 @@ fn options_columns_follow_reference_order_with_map_below() {
     h.run();
     h.get_by_label("Options...").click();
     h.run();
+    let dialog = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::new("plot options")))
+        .unwrap();
+    assert!(dialog.width() <= 600.0, "Options too wide: {dialog:?}");
     let texts = rendered_text(&h);
     let position = |label: &str| {
         texts
@@ -2063,6 +2074,8 @@ fn options_columns_follow_reference_order_with_map_below() {
         vec![
             "Plot Style",
             "Mark Size",
+            "Grid label size",
+            "Statistics size",
             "Animation step",
             "Update cycle (ms)",
         ],
@@ -2071,7 +2084,10 @@ fn options_columns_follow_reference_order_with_map_below() {
     for labels in columns {
         let points: Vec<_> = labels.iter().map(|s| position(s)).collect();
         assert!(points.windows(2).all(|p| p[0].y < p[1].y));
-        assert!(points.iter().all(|p| (p.x - points[0].x).abs() < 1.0));
+        assert!(
+            points.iter().all(|p| (p.x - points[0].x).abs() < 1.0),
+            "{points:?}"
+        );
         assert!(points.iter().all(|p| p.y < position("Map").y));
         xs.push(points[0].x);
     }
@@ -2101,10 +2117,97 @@ fn options_columns_follow_reference_order_with_map_below() {
     assert!(position("Map").y < position("Tile URL ({z}/{x}/{y})").y);
     assert!(position("Tile URL ({z}/{x}/{y})").y < position("Tile attribution").y);
     assert!(position("Tile attribution").y < position("OK").y);
+    let text_fields: Vec<_> = h
+        .get_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::TextInput))
+        .map(|n| n.rect())
+        .collect();
+    assert_eq!(text_fields.len(), 2);
+    assert_eq!(text_fields[0].x_range(), text_fields[1].x_range());
+    assert!(
+        text_fields
+            .iter()
+            .all(|r| r.left() > position("Tile URL ({z}/{x}/{y})").x
+                && r.right() <= dialog.right() - 4.0)
+    );
     select(&mut h, "Grid", "Circles/Label");
+    select(&mut h, "Average Pos", "Lat/Lon/Hgt");
+    let draft = h.state_mut().options.as_mut().unwrap();
+    draft.llh = [35.123456789, 139.123456789, 1234.5678];
+    draft.grid_label_size = 18.5;
+    draft.statistics_size = 24.0;
+    h.run();
+    let edited_dialog = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::new("plot options")))
+        .unwrap();
+    assert_eq!(edited_dialog.width(), dialog.width());
     h.get_by_label("OK").click();
     h.run();
     assert_eq!(h.state().controller.settings.options.show_g_label, 4);
+    assert_eq!(h.state().controller.settings.options.grid_label_size, 18.5);
+    assert_eq!(h.state().controller.settings.options.statistics_size, 24.0);
+}
+
+#[test]
+fn grid_and_statistics_use_their_independent_configured_font_sizes() {
+    for kind in [0, 1] {
+        let mut h = harness(kind);
+        assert_eq!(
+            h.ctx.style_of(egui::Theme::Light).text_styles[&egui::TextStyle::Small].size,
+            Options::default().grid_label_size
+        );
+        for format in [2, 4] {
+            for (grid_size, statistics_size) in [(9.0, 12.0), (18.5, 14.0), (12.0, 24.0)] {
+                let options = &mut h.state_mut().controller.settings.options;
+                options.statistics = true;
+                options.show_g_label = format;
+                options.grid_label_size = grid_size;
+                options.statistics_size = statistics_size;
+                h.run();
+                let texts = rendered_text_shapes(&h);
+                let overlays: Vec<_> = texts
+                    .iter()
+                    .filter(|t| t.galley.text().contains("AVE="))
+                    .collect();
+                assert!(!overlays.is_empty());
+                assert!(
+                    overlays
+                        .iter()
+                        .flat_map(|t| &t.galley.job.sections)
+                        .all(|s| s.format.font_id == egui::FontId::monospace(statistics_size))
+                );
+                if kind == 0 {
+                    let top = h.state().geometry.unwrap().frames[0].unwrap().top();
+                    let labels: Vec<_> = texts
+                        .iter()
+                        .filter(|t| t.pos.y >= top - 30.0 && t.galley.text().parse::<f64>().is_ok())
+                        .collect();
+                    assert!(!labels.is_empty());
+                    assert!(
+                        labels
+                            .iter()
+                            .flat_map(|t| &t.galley.job.sections)
+                            .all(|s| s.format.font_id == egui::FontId::proportional(grid_size))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_configured_text_sizes() {
+    for (format, name) in [(2, "grid"), (4, "circles")] {
+        let mut h = harness(0);
+        let o = &mut h.state_mut().controller.settings.options;
+        o.show_g_label = format;
+        o.grid_label_size = 18.0;
+        o.statistics = true;
+        o.statistics_size = 16.0;
+        h.run();
+        save(&mut h, &format!("snapshot_plot_text_sizes_{name}"));
+    }
 }
 
 fn snapshot_grid_format(format: usize, name: &str) {

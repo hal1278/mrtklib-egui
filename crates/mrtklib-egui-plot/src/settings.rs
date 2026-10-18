@@ -13,6 +13,7 @@ pub(crate) const ORIGINS: [&str; 6] = [
 ];
 pub(crate) const GRID_FORMATS: [&str; 5] =
     ["OFF", "Grid", "Grid/Label", "Circles", "Circles/Label"];
+pub(crate) const TEXT_SIZE_RANGE: std::ops::RangeInclusive<f32> = 6.0..=30.0;
 pub(crate) const SIZES: [u32; 8] = [1, 2, 3, 4, 5, 10, 15, 20];
 /// RTKPLOT's RangeList labels and YRange values in metres.
 pub(crate) const ORIGIN_RANGES: [(&str, f64); 23] = [
@@ -50,6 +51,8 @@ pub(crate) struct Options {
     pub dms: bool,
     pub statistics: bool,
     pub show_g_label: usize,
+    pub grid_label_size: f32,
+    pub statistics_size: f32,
     pub style: usize,
     pub mark_size: u32,
     pub origin: usize,
@@ -69,6 +72,8 @@ impl Default for Options {
             dms: false,
             statistics: false,
             show_g_label: 1,
+            grid_label_size: 9.0,
+            statistics_size: 12.0,
             style: 0,
             mark_size: 2,
             origin: 2,
@@ -89,6 +94,11 @@ impl Options {
             || !SIZES.contains(&self.mark_size)
         {
             return Err("invalid plot option selection".into());
+        }
+        if !TEXT_SIZE_RANGE.contains(&self.grid_label_size)
+            || !TEXT_SIZE_RANGE.contains(&self.statistics_size)
+        {
+            return Err("Grid label and statistics sizes must be between 6 and 30 pt".into());
         }
         if !self.y_range.is_finite() || self.y_range <= 0.0 {
             return Err("Y-range must be positive and finite".into());
@@ -259,6 +269,38 @@ mod tests {
         assert!(ORIGIN_RANGES.windows(2).all(|r| r[0].1 < r[1].1));
     }
     #[test]
+    fn text_sizes_validate_both_limits_and_nonfinite_values_independently() {
+        for size in [6.0, 9.0, 12.0, 30.0] {
+            assert!(
+                Options {
+                    grid_label_size: size,
+                    statistics_size: size,
+                    ..Default::default()
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        for size in [5.99, 30.01, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(
+                Options {
+                    grid_label_size: size,
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                Options {
+                    statistics_size: size,
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+    }
+    #[test]
     fn settings_round_trip_and_errors() {
         let dir = std::env::temp_dir().join(format!(
             "plot-settings-{}",
@@ -284,6 +326,8 @@ mod tests {
             qualities: QualityFilter([false, false, false, false, false, false, true, false]),
             options: Options {
                 show_g_label: 4,
+                grid_label_size: 18.5,
+                statistics_size: 24.0,
                 origin: 5,
                 auto_fit: false,
                 llh: [35.0, 139.0, 10.0],
@@ -312,6 +356,8 @@ mod tests {
         .unwrap();
         let old_options = load(&path).unwrap().options;
         assert_eq!(old_options.show_g_label, 1);
+        assert_eq!(old_options.grid_label_size, 9.0);
+        assert_eq!(old_options.statistics_size, 12.0);
         assert_eq!(old_options.style, 2);
         assert_eq!(old_options.tile_url, "http://localhost/{z}/{x}/{y}");
         std::fs::write(&path, r#"{"quality":6}"#).unwrap();
@@ -321,6 +367,8 @@ mod tests {
         assert!(migrated.options.tile_url.is_empty());
         assert!(migrated.options.tile_attribution.is_empty());
         assert_eq!(migrated.options.show_g_label, 1);
+        assert_eq!(migrated.options.grid_label_size, 9.0);
+        assert_eq!(migrated.options.statistics_size, 12.0);
         assert_eq!(migrated.options.anim_cycle, 10);
         assert_eq!(migrated.options.ref_cycle, 100);
         assert!(migrated.qualities.visible(6));
@@ -333,6 +381,8 @@ mod tests {
             r#"{"options":{"show_g_label":5}}"#,
             r#"{"options":{"show_g_label":-1}}"#,
             r#"{"options":{"y_range":0}}"#,
+            r#"{"options":{"grid_label_size":5.9}}"#,
+            r#"{"options":{"statistics_size":30.1}}"#,
             r#"{"options":{"ref_cycle":-1}}"#,
             r#"{"options":{"anim_cycle":1.5}}"#,
             r#"{"options":{"tile_url":"http://localhost/no-template"}}"#,

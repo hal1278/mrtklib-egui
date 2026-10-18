@@ -89,7 +89,7 @@ pub(crate) fn axis_marks(input: GridInput, calendar: bool, double_numeric: bool)
 pub(crate) struct Grid {
     base: PlotItemBase,
     calendar: bool,
-    ground: Option<(usize, bool)>,
+    ground: Option<(usize, bool, f32)>,
 }
 impl Grid {
     pub fn new(calendar: bool) -> Self {
@@ -101,9 +101,9 @@ impl Grid {
     }
 }
 impl Grid {
-    pub fn ground(format: usize, show: bool) -> Self {
+    pub fn ground(format: usize, show: bool, label_size: f32) -> Self {
         Self {
-            ground: Some((format, show)),
+            ground: Some((format, show, label_size)),
             ..Self::new(false)
         }
     }
@@ -114,6 +114,7 @@ impl Grid {
         transform: &PlotTransform,
         shapes: &mut Vec<Shape>,
         format: usize,
+        label_size: f32,
     ) {
         let rect = *transform.frame();
         let stroke = egui::Stroke::new(1.0, self.color());
@@ -180,7 +181,7 @@ impl Grid {
                     let text = number(value, step);
                     let galley = ui.painter().layout_no_wrap(
                         text,
-                        egui::TextStyle::Small.resolve(ui.style()),
+                        egui::FontId::proportional(label_size),
                         Color32::BLACK,
                     );
                     let size = galley.size();
@@ -299,9 +300,9 @@ fn circle_dots(
 }
 impl PlotItem for Grid {
     fn shapes(&self, ui: &egui::Ui, transform: &PlotTransform, shapes: &mut Vec<Shape>) {
-        if let Some((format, show)) = self.ground {
+        if let Some((format, show, label_size)) = self.ground {
             if show {
-                self.ground_shapes(ui, transform, shapes, format);
+                self.ground_shapes(ui, transform, shapes, format, label_size);
             }
             return;
         }
@@ -391,7 +392,7 @@ mod tests {
                 for format in 0..5 {
                     for show in [false, true] {
                         let mut shapes = vec![];
-                        Grid::ground(format, show).shapes(ui, &transform, &mut shapes);
+                        Grid::ground(format, show, 9.0).shapes(ui, &transform, &mut shapes);
                         if !show {
                             assert!(shapes.is_empty());
                             continue;
