@@ -58,11 +58,12 @@ fn tile_position(tile: Tile, uv: [f64; 2], origin: [f64; 3], height: f64) -> [f6
     let [lat, lon] = latlon(x, f64::from(tile.y) + uv[1], tile.z);
     ecef_to_enu(llh_to_ecef([lat, lon, height]), origin)
 }
+/// Bounds of all mesh vertices: curved edges can bulge beyond the corners.
 fn tile_bounds(tile: Tile, origin: [f64; 3]) -> Bounds {
     let height = ecef_to_llh(origin)[2];
     let mut bounds = PlotBounds::NOTHING;
-    for uv in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
-        let [e, n, _] = tile_position(tile, uv, origin, height);
+    for index in 0..TILE_SIDE * TILE_SIDE {
+        let [e, n, _] = tile_position(tile, TileMesh::uv(index), origin, height);
         bounds.extend_with(&PlotPoint::new(e, n));
     }
     Bounds {
@@ -964,5 +965,31 @@ pub(crate) mod tests {
         wait(&mut layer, &ctx);
         assert!(layer.cache.is_empty());
         assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn culling_bounds_contain_every_mesh_vertex() {
+        // A northern origin at a tile's longitude midpoint: the southern edge bulges south.
+        let z = 8;
+        let tile = Tile { z, x: 200, y: 60 };
+        let [lat, lon] = latlon(200.5, 60.0, z);
+        let origin = llh_to_ecef([lat, lon, 0.0]);
+        let b = tile_bounds(tile, origin);
+        let height = ecef_to_llh(origin)[2];
+        let corners_min_n = [[0.0, 1.0], [1.0, 1.0]]
+            .map(|uv| tile_position(tile, uv, origin, height)[1])
+            .into_iter()
+            .fold(f64::INFINITY, f64::min);
+        let edge_mid = tile_position(tile, [0.5, 1.0], origin, height)[1];
+        assert!(edge_mid < corners_min_n, "{edge_mid} {corners_min_n}");
+        for index in 0..TILE_SIDE * TILE_SIDE {
+            let [e, n, _] = tile_position(tile, TileMesh::uv(index), origin, height);
+            assert!(b.x.min <= e && e <= b.x.max && b.y.min <= n && n <= b.y.max);
+        }
+        let view = Bounds {
+            x: Range::new(-1.0, 1.0),
+            y: Range::new(edge_mid - 1.0, (edge_mid + corners_min_n) / 2.0),
+        };
+        assert!(intersects(b, view));
     }
 }
