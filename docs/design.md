@@ -1,7 +1,8 @@
 # mrtklib-egui design
 
 This document is the reference for the design of `mrtklib-egui`.
-Each rule states its rationale where the reason is not obvious. History is in the Git log, not here.
+Each rule states its rationale where the reason is not obvious.
+History is in the Git log, not here.
 
 ## Purpose and scope
 
@@ -23,7 +24,9 @@ The toolkit is egui for now and may change.
 | `mrtklib-egui-conv` | RTKCONV | `mrtk convert` (finite process) | argv, files, stderr display and exit status in the first slice |
 | `mrtklib-egui-plot` | RTKPLOT | solution files, the `mrtk run` monitor port | reads defined formats only |
 
-- Each application is a separate executable. Shared parts (RPC client, process supervisor, configuration handling) live in shared crates of one cargo workspace. There is no launcher.
+- Each application is a separate executable.
+  Shared parts (RPC client, process supervisor, configuration handling) live in shared crates of one cargo workspace.
+  There is no launcher.
   Rationale: this matches the structure of the RTKLIB suite, and egui support for multiple windows is not verified yet.
 - STRSVR, RTKGET and NTRIP browser equivalents are out of the first milestone.
   Rationale: the four applications above are enough to exercise the new interfaces (RPC, progress output, configuration handling); more applications would widen the interface work (for example relay statistics).
@@ -32,16 +35,23 @@ The toolkit is egui for now and may change.
 
 - Functions that RTKLIB also has follow the RTKLIB GUI, at least in the first implementation.
   Rationale: the target users know RTKLIB.
-- Functions that MRTKLIB adds (for example CLAS and MADOCA-PPP) follow the same style. The MADOCALIB GUI may serve as a reference.
+- Functions that MRTKLIB adds (for example CLAS and MADOCA-PPP) follow the same style.
+  The MADOCALIB GUI may serve as a reference.
 - The look is the classic light one in every OS theme, including a dark OS setting.
   Rationale: RTKLIB has no dark mode.
-- On Windows the applications use the fonts that RTKLIB shows on Japanese Windows: Tahoma for Latin text and MS UI Gothic (in `Msgothic.ttc`) for Japanese text, the font that Windows links to Tahoma first there. A Japanese Windows environment is assumed to have both; no other fonts are tried in their place, at least in the first implementation. egui's built-in fonts stay after them in the list and draw only what Tahoma and MS UI Gothic lack. The fonts are looked up in the system font directory, then in the current user's font directory.
-  Rationale: RTKLIB's forms use Tahoma and leave Japanese glyphs to Windows' font linking. egui draws text itself and has no OS font fallback, so the same fonts are chosen explicitly. Reading the font-link chain from the registry would also follow customized systems, but needs considerably more code and cannot be checked on the Linux development machine. The link was checked on Windows 11 with the Japanese system locale: the font-link entry for Tahoma starts with MS UI Gothic in `MSGOTHIC.TTC`.
-- On Linux and macOS, egui's built-in fonts draw Latin text and a system font draws Japanese text: Noto Sans CJK JP on Linux, Hiragino on macOS (not verified). No font is bundled.
+- On Windows the applications use the fonts that RTKLIB shows on Japanese Windows: Tahoma for Latin text and MS UI Gothic (in `Msgothic.ttc`) for Japanese text, the font that Windows links to Tahoma first there.
+  A Japanese Windows environment is assumed to have both; no other fonts are tried in their place, at least in the first implementation. egui's built-in fonts stay after them in the list and draw only what Tahoma and MS UI Gothic lack.
+  The fonts are looked up in the system font directory, then in the current user's font directory.
+  Rationale: RTKLIB's forms use Tahoma and leave Japanese glyphs to Windows' font linking. egui draws text itself and has no OS font fallback, so the same fonts are chosen explicitly.
+  Reading the font-link chain from the registry would also follow customized systems, but needs considerably more code and cannot be checked on the Linux development machine.
+  The link was checked on Windows 11 with the Japanese system locale: the font-link entry for Tahoma starts with MS UI Gothic in `MSGOTHIC.TTC`.
+- On Linux and macOS, egui's built-in fonts draw Latin text and a system font draws Japanese text: Noto Sans CJK JP on Linux, Hiragino on macOS (not verified).
+  No font is bundled.
   Rationale: bundling a CJK font adds tens of megabytes.
 - Monospace text uses egui's built-in monospace font, with the Japanese font after it.
 - A font inside a collection (`.ttc`) is chosen by family name, because one file holds several faces (MS Gothic, MS PGothic and MS UI Gothic).
-- The environment variable `MRTKLIB_EGUI_CJK_FONT` names a file that replaces the Japanese font (on Windows, MS UI Gothic); if that file cannot be read, the application stops. It does not change the Latin font.
+- The environment variable `MRTKLIB_EGUI_CJK_FONT` names a file that replaces the Japanese font (on Windows, MS UI Gothic); if that file cannot be read, the application stops.
+  It does not change the Latin font.
 - If a font is not found, the applications still start and print a warning on stderr: without Tahoma, Latin text uses the built-in font; without a Japanese font, Japanese text cannot be shown.
 
 ## Relationship to MRTKLIB
@@ -50,23 +60,39 @@ The toolkit is egui for now and may change.
 
 - The GUI starts the `mrtk` executable as a child process and never links MRTKLIB.
   Rationale: the GUI then does not depend on MRTKLIB internals or a C ABI, control logic is not duplicated in each frontend, and a crash in positioning does not take the GUI down.
-- Keep the way the backend is launched replaceable. A future option is a single executable that links MRTKLIB and starts itself with backend arguments, keeping the process boundary.
-- Each GUI process that needs a backend starts its own `mrtk` and ties it to its own lifetime. With several receivers there are several `mrtk` processes. Such a backend is used only by the GUI that started it; the GUI does not show its endpoint or token, at least in the first implementation.
-  Rationale: this is how each RTKNAVI window owns its server, and it avoids designing discovery, ownership and authentication for a shared backend. A system-wide shared backend is out of scope.
-- The GUI can also connect to an `mrtk run` that it did not start, when the user enters its host, port and token. At least in the first implementation, the GUI does not detect running backends and never attaches to one on its own.
+- Keep the way the backend is launched replaceable.
+  A future option is a single executable that links MRTKLIB and starts itself with backend arguments, keeping the process boundary.
+- Each GUI process that needs a backend starts its own `mrtk` and ties it to its own lifetime.
+  With several receivers there are several `mrtk` processes.
+  Such a backend is used only by the GUI that started it; the GUI does not show its endpoint or token, at least in the first implementation.
+  Rationale: this is how each RTKNAVI window owns its server, and it avoids designing discovery, ownership and authentication for a shared backend.
+  A system-wide shared backend is out of scope.
+- The GUI can also connect to an `mrtk run` that it did not start, when the user enters its host, port and token.
+  At least in the first implementation, the GUI does not detect running backends and never attaches to one on its own.
   Rationale: the token is set when the backend starts (by the parent process, a setting, or shown on the terminal), so only the user can supply it.
 
 ### Interfaces
 
-- `mrtk run` is controlled only through the RPC (JSON-RPC 2.0 over WebSocket). The GUI never uses the telnet console; the machine-interface design (#326) keeps it only as a frozen compatibility interface.
-- `mrtk post` and `mrtk convert` stay finite processes. The target interface passes argv and files, reads a machine-readable progress mode (one JSON object per line, not on stdout), and cancels by writing a line to stdin or closing it. Results are the exit status and the output files. The Conv first slice is an explicit exception: `convert` has no progress/cancel interface yet, so it displays stderr without parsing and has no Abort action.
-  Rationale: these jobs need no server. A signal is hard to deliver to a child process on Windows, and a forced kill leaves partial output files.
-- MRTKLIB provides configuration handling: schema, read, write and validate, through the RPC for `mrtk run` and through `mrtk` subcommands otherwise. The GUI has no knowledge of TOML. Which options the GUI shows, where and under which labels, is the GUI's choice.
+- `mrtk run` is controlled only through the RPC (JSON-RPC 2.0 over WebSocket).
+  The GUI never uses the telnet console; the machine-interface design (#326) keeps it only as a frozen compatibility interface.
+- `mrtk post` and `mrtk convert` stay finite processes.
+  The target interface passes argv and files, reads a machine-readable progress mode (one JSON object per line, not on stdout), and cancels by writing a line to stdin or closing it.
+  Results are the exit status and the output files.
+  The Conv first slice is an explicit exception: `convert` has no progress/cancel interface yet, so it displays stderr without parsing and has no Abort action.
+  Rationale: these jobs need no server.
+  A signal is hard to deliver to a child process on Windows, and a forced kill leaves partial output files.
+- MRTKLIB provides configuration handling: schema, read, write and validate, through the RPC for `mrtk run` and through `mrtk` subcommands otherwise.
+  The GUI has no knowledge of TOML.
+  Which options the GUI shows, where and under which labels, is the GUI's choice.
   Rationale: value tables, defaults and validation are not reimplemented per frontend; a hand-written implementation drifts and drops unknown keys.
-- The GUI never parses human-readable MRTKLIB output (console text, stderr progress lines, log messages) to obtain state. Showing such text as-is is fine. Information that exists only as human-readable text is a candidate for the MRTKLIB machine interface and is raised there instead of being parsed.
+- The GUI never parses human-readable MRTKLIB output (console text, stderr progress lines, log messages) to obtain state.
+  Showing such text as-is is fine.
+  Information that exists only as human-readable text is a candidate for the MRTKLIB machine interface and is raised there instead of being parsed.
   Rationale: removing this kind of parsing from frontends is the purpose of the machine interface.
-- The protocol is versioned. From 1.0 the GUI checks the major version it supports; while the protocol is 0.x, where any change may be incompatible, it accepts only the exact version it was built for.
-- Exact method names, option names, environment variable names and line formats are defined by MRTKLIB `docs/rpc/` (protocol 0.1 is implemented in the fork). RPC method, field and event names keep the spelling of `docs/rpc/`; Rust code applies only mechanical case conversion, so that code and schema can be compared directly.
+- The protocol is versioned.
+  From 1.0 the GUI checks the major version it supports; while the protocol is 0.x, where any change may be incompatible, it accepts only the exact version it was built for.
+- Exact method names, option names, environment variable names and line formats are defined by MRTKLIB `docs/rpc/` (protocol 0.1 is implemented in the fork).
+  RPC method, field and event names keep the spelling of `docs/rpc/`; Rust code applies only mechanical case conversion, so that code and schema can be compared directly.
 
 ### Allowed in the GUI
 
@@ -85,93 +111,432 @@ These are part of the GUI's job:
 
 ### The `mrtk` executable
 
-- `mrtk` is bundled next to the GUI executables, and the GUI uses that copy by default. A user setting can select another `mrtk`. `mrtk` on PATH is not used by default.
+- `mrtk` is bundled next to the GUI executables, and the GUI uses that copy by default.
+  A user setting can select another `mrtk`.
+  `mrtk` on PATH is not used by default.
   Rationale: users start the GUI like RTKLIB, without a separate install; the user setting allows trying development builds.
-- In the navi and conv prototypes, `MRTKLIB_EGUI_MRTK` selects a development executable. Relative overrides resolve against the working directory, including bare filenames, to avoid an accidental PATH search; an empty override is an error. Otherwise `mrtk` (`mrtk.exe` on Windows) is resolved next to `std::env::current_exe()`, without searching PATH. A later user setting will take precedence over the development variable.
-- The GUI shows the path and version of the `mrtk` in use. If that `mrtk` speaks a protocol version the GUI does not support, the GUI shows an error message and does not use it.
-- During the prototype, the bundled `mrtk` is built from the fork that implements the RPC (`hal1278/MRTKLIB`). After upstream merges it, it is built from upstream.
+- In the navi and conv prototypes, `MRTKLIB_EGUI_MRTK` selects a development executable.
+  Relative overrides resolve against the working directory, including bare filenames, to avoid an accidental PATH search; an empty override is an error.
+  Otherwise `mrtk` (`mrtk.exe` on Windows) is resolved next to `std::env::current_exe()`, without searching PATH.
+  A later user setting will take precedence over the development variable.
+- The GUI shows the path and version of the `mrtk` in use.
+  If that `mrtk` speaks a protocol version the GUI does not support, the GUI shows an error message and does not use it.
+- During the prototype, the bundled `mrtk` is built from the fork that implements the RPC (`hal1278/MRTKLIB`).
+  After upstream merges it, it is built from upstream.
 
 ## `mrtk run` session
 
 1. The GUI creates a random token and passes it to `mrtk` in an environment variable.
    Rationale: the token never appears on stdout, so it cannot leak through a frontend that logs child output.
-2. The GUI starts `mrtk run --rpc-port 0 --no-console --exit-on-stdin-eof --config <file>` in the settings directory, with a stdin pipe held open by the supervisor. The pipe is never written; EOF or a read error asks the backend for normal shutdown even before readiness or after an RPC connection is lost.
-3. When `mrtk` is listening, it prints the endpoint as one machine-readable line. That line is the readiness signal.
+2. The GUI starts `mrtk run --rpc-port 0 --no-console --exit-on-stdin-eof --config <file>` in the settings directory, with a stdin pipe held open by the supervisor.
+   The pipe is never written; EOF or a read error asks the backend for normal shutdown even before readiness or after an RPC connection is lost.
+3. When `mrtk` is listening, it prints the endpoint as one machine-readable line.
+   That line is the readiness signal.
    Rationale: port 0 avoids port conflicts, and the line replaces a fixed wait that cannot tell "still starting" from "failed".
 4. The GUI connects over WebSocket and presents the token.
-5. The GUI pulls status and events. Solutions come as a sequence with sequence numbers.
-6. Configuration changes are accepted only while the server is stopped, at least in the first implementation. Keys that take effect immediately (currently the log sink level) are the exception.
+5. The GUI pulls status and events.
+   Solutions come as a sequence with sequence numbers.
+6. Configuration changes are accepted only while the server is stopped, at least in the first implementation.
+   Keys that take effect immediately (currently the log sink level) are the exception.
    Rationale: MRTKLIB writes option values into state that a running engine uses.
-7. On exit the GUI queues `shutdown`, then the process supervisor closes stdin and waits up to 5 s before killing a backend that has not exited. RPC shutdown and stdin EOF are one idempotent shutdown.
+7. On exit the GUI queues `shutdown`, then the process supervisor closes stdin and waits up to 5 s before killing a backend that has not exited.
+   RPC shutdown and stdin EOF are one idempotent shutdown.
    Rationale: `shutdown` saves navigation data and closes output files without OS-specific signals; the kill keeps the backend tied to the GUI lifetime even when it hangs.
 
-Each connection starts with an initial synchronization. Events missed while disconnected cannot be recovered; to record solutions, use the `mrtk` output streams (for example a solution file), not the RPC.
+Each connection starts with an initial synchronization.
+Events missed while disconnected cannot be recovered; to record solutions, use the `mrtk` output streams (for example a solution file), not the RPC.
 
 ### Navi first vertical slice
 
-- The backend starts when the app starts and lives until the app closes, like RTKNAVI's server initialized at window creation. Start and Stop send only the RPC lifecycle requests. The executed command, working directory and displayed preview share one `CommandLine`: `run --rpc-port 0 --no-console --exit-on-stdin-eof --config <settings directory>/<GUI executable file stem>.toml`. The configuration filename is provisional until the configuration screens. At launch, a missing file is reported in status text as using MRTKLIB defaults, based on a file existence check, never by parsing backend output. `generate_token()` supplies the secret environment variable `MRTK_RPC_TOKEN`.
-- A non-egui controller owns `Supervisor` and `Session`. Each logic pass reads the supervisor snapshot and starts one session on `Ready { url }`, without `wait_ready` or automatic reconnection. Both workers notify through `Context::request_repaint`; the shared window constructor can supply that context. Pure modules resolve the program and map state to display text, colors and enabled buttons; egui only draws the view and forwards actions.
-- Exit and window close start a shutdown worker: queue RPC `shutdown`, then call `Supervisor::stop` with a 5 s grace. Shutdown stops positioning, saves navigation data and closes output files; measured Linux replay shutdown to exit status 0 takes 1.8–2.0 s, so 5 s allows a slow machine, and the kill afterwards keeps the backend tied to the GUI lifetime. The window remains responsive and defers closing until process exit and the supervisor's bounded drain complete. Completion is signalled before joining the session, so its request/close timeouts do not extend the window's closing delay.
-- Time is two lines: `GPST <week> <tow>` and ISO 8601 UTC with milliseconds. Round to the nearest millisecond before splitting fields, carrying into the next second, day, year or GPS week. UTC is the GPS epoch (1980-01-06) plus GPST minus the epoch's `leapSeconds`; Gregorian calendar conversion needs no new dependency or leap-second table. Time of week must be finite and in `[0, 604800)` before rounding; invalid input or checked arithmetic failure shows `GPST invalid time` and `UTC invalid time` instead of a date.
-- Solution labels and RGB colors follow RTKNAVI: `----` silver `#C0C0C0`, FIX green `#008000`, FLOAT orange `#FFAA00`, SBAS fuchsia `#FF00FF`, DGPS blue `#0000FF`, SINGLE red `#FF0000`, PPP teal `#008080`. DR uses RTKPLOT's gray `#808080`. While running, status text and the square use that color (the square is white for none). Outside running, or after disconnect, status and time text are gray and the square is white.
-- Position is `Lat:` and `Lon:` in signed decimal degrees with 8 decimals and `°`, as in mrtklib-docker-ui; RTKNAVI's N/S and E/W labels are not used because the σ line uses `E:` and `N:` for ENU components. `He:` is ellipsoidal height with 3 decimals and `m`. The σ line is `E:%6.3f N:%6.3f U:%6.3f m`, from the square roots of ENU diagonal covariance, clamping negative variances to zero. Quality is RTKNAVI's `Age:%4.1f s Ratio:%4.1f #Sat:%2d`. Like RTKNAVI, `none` keeps the last valid solution's time, position, σ and quality; only the server's solution status changes to `----` (silver, white indicator while running), and NONE's own time is not shown. Before any valid solution these fields have placeholders; the last display remains after Stop and clears on the next Starting event.
-- Start is shown when stopped, Stop otherwise; the action is enabled only when connected and the lifecycle is stopped or running. It is disabled during closing. Options stays disabled with a configuration-unavailable hover explanation. Protocol 0.1 supplies no stream state, so there are no Rover/Base/Corr indicators.
-- A GUI Start operation begins with no overwrite consents. The session worker settles each accepted Start once, from the first `running` or `stopped` status event with a sequence greater than the response boundary for that request. The server serializes lifecycle transitions (`busy` during starting or stopping), so that first terminal event is the result of this Start. The settled lifecycle is retained with the request outcome, even when other clients complete later transitions in the same event page or before the next UI tick. The controller opens one modal dialog only when that settled lifecycle is `stopped` with `outputExists`, using its original paths; `running` or any other stopped result ends the operation. Failures from other clients remain in status text. If a synchronization replaces the model before settlement, the Start outcome becomes unknown and the operation ends without a dialog; later events cannot settle it, and Start can be tried again. A synchronization after settlement preserves the known outcome. The dialog lists the refused paths in server order, with the working directory and an `Overwrite` checkbox for each path. It stays within the compact window: long paths wrap, the working directory and the paths scroll, and the buttons stay visible. Start is enabled only when every checkbox is checked, and retries with every consent accumulated during this operation, unchanged for the server's byte comparison. A later refusal lists its new paths and retains earlier consents; Cancel ends the operation. Each row owns its per-path choice so other choices can be added later. Append needs MRTKLIB support; editing a path needs configuration RPC. Neither control is shown. Raw paths are retained for consent; all display text still passes through credential masking.
-- The bottom status text shows the backend command preview (including path), MRTKLIB and protocol versions when connected, startup or connection failures, or server exit. It also shows lifecycle, `stopReason`, `lastError`, the last request's error reason and message, known mode and nonzero lost-events count. Startup failure includes the supervisor's last masked output line. All view text, including labels and hover text, passes through the supervisor's common mask with the token before egui draws it. Long status text scrolls inside the compact window.
-- Switching position formats and time systems, orthometric height, solution scroll-back, PPP-AR labels, input stream indicators and a log panel are outside this slice. Tests cover pure display logic and the controller's readiness/session mapping with an in-process mock. Live session tests check persistent lifecycle states; transient display states are tested with constructed models.
+- The backend starts when the app starts and lives until the app closes, like RTKNAVI's server initialized at window creation.
+  Start and Stop send only the RPC lifecycle requests.
+  The executed command, working directory and displayed preview share one `CommandLine`: `run --rpc-port 0 --no-console --exit-on-stdin-eof --config <settings directory>/<GUI executable file stem>.toml`.
+  The configuration filename is provisional until the configuration screens.
+  At launch, a missing file is reported in status text as using MRTKLIB defaults, based on a file existence check, never by parsing backend output.
+  `generate_token()` supplies the secret environment variable `MRTK_RPC_TOKEN`.
+- A non-egui controller owns `Supervisor` and `Session`.
+  Each logic pass reads the supervisor snapshot and starts one session on `Ready { url }`, without `wait_ready` or automatic reconnection.
+  Both workers notify through `Context::request_repaint`; the shared window constructor can supply that context.
+  Pure modules resolve the program and map state to display text, colors and enabled buttons; egui only draws the view and forwards actions.
+- Exit and window close start a shutdown worker: queue RPC `shutdown`, then call `Supervisor::stop` with a 5 s grace.
+  Shutdown stops positioning, saves navigation data and closes output files; measured Linux replay shutdown to exit status 0 takes 1.8–2.0 s, so 5 s allows a slow machine, and the kill afterwards keeps the backend tied to the GUI lifetime.
+  The window remains responsive and defers closing until process exit and the supervisor's bounded drain complete.
+  Completion is signalled before joining the session, so its request/close timeouts do not extend the window's closing delay.
+- Time is two lines: `GPST <week> <tow>` and ISO 8601 UTC with milliseconds.
+  Round to the nearest millisecond before splitting fields, carrying into the next second, day, year or GPS week.
+  UTC is the GPS epoch (1980-01-06) plus GPST minus the epoch's `leapSeconds`; Gregorian calendar conversion needs no new dependency or leap-second table.
+  Time of week must be finite and in `[0, 604800)` before rounding; invalid input or checked arithmetic failure shows `GPST invalid time` and `UTC invalid time` instead of a date.
+- Solution labels and RGB colors follow RTKNAVI: `----` silver `#C0C0C0`, FIX green `#008000`, FLOAT orange `#FFAA00`, SBAS fuchsia `#FF00FF`, DGPS blue `#0000FF`, SINGLE red `#FF0000`, PPP teal `#008080`.
+  DR uses RTKPLOT's gray `#808080`.
+  While running, status text and the square use that color (the square is white for none).
+  Outside running, or after disconnect, status and time text are gray and the square is white.
+- Position is `Lat:` and `Lon:` in signed decimal degrees with 8 decimals and `°`, as in mrtklib-docker-ui; RTKNAVI's N/S and E/W labels are not used because the σ line uses `E:` and `N:` for ENU components.
+  `He:` is ellipsoidal height with 3 decimals and `m`.
+  The σ line is `E:%6.3f N:%6.3f U:%6.3f m`, from the square roots of ENU diagonal covariance, clamping negative variances to zero.
+  Quality is RTKNAVI's `Age:%4.1f s Ratio:%4.1f #Sat:%2d`.
+  Like RTKNAVI, `none` keeps the last valid solution's time, position, σ and quality; only the server's solution status changes to `----` (silver, white indicator while running), and NONE's own time is not shown.
+  Before any valid solution these fields have placeholders; the last display remains after Stop and clears on the next Starting event.
+- Start is shown when stopped, Stop otherwise; the action is enabled only when connected and the lifecycle is stopped or running.
+  It is disabled during closing.
+  Options stays disabled with a configuration-unavailable hover explanation.
+  Protocol 0.1 supplies no stream state, so there are no Rover/Base/Corr indicators.
+- A GUI Start operation begins with no overwrite consents.
+  The session worker settles each accepted Start once, from the first `running` or `stopped` status event with a sequence greater than the response boundary for that request.
+  The server serializes lifecycle transitions (`busy` during starting or stopping), so that first terminal event is the result of this Start.
+  The settled lifecycle is retained with the request outcome, even when other clients complete later transitions in the same event page or before the next UI tick.
+  The controller opens one modal dialog only when that settled lifecycle is `stopped` with `outputExists`, using its original paths; `running` or any other stopped result ends the operation.
+  Failures from other clients remain in status text.
+  If a synchronization replaces the model before settlement, the Start outcome becomes unknown and the operation ends without a dialog; later events cannot settle it, and Start can be tried again.
+  A synchronization after settlement preserves the known outcome.
+  The dialog lists the refused paths in server order, with the working directory and an `Overwrite` checkbox for each path.
+  It stays within the compact window: long paths wrap, the working directory and the paths scroll, and the buttons stay visible.
+  Start is enabled only when every checkbox is checked, and retries with every consent accumulated during this operation, unchanged for the server's byte comparison.
+  A later refusal lists its new paths and retains earlier consents; Cancel ends the operation.
+  Each row owns its per-path choice so other choices can be added later.
+  Append needs MRTKLIB support; editing a path needs configuration RPC.
+  Neither control is shown.
+  Raw paths are retained for consent; all display text still passes through credential masking.
+- The bottom status text shows the backend command preview (including path), MRTKLIB and protocol versions when connected, startup or connection failures, or server exit.
+  It also shows lifecycle, `stopReason`, `lastError`, the last request's error reason and message, known mode and nonzero lost-events count.
+  Startup failure includes the supervisor's last masked output line.
+  All view text, including labels and hover text, passes through the supervisor's common mask with the token before egui draws it.
+  Long status text scrolls inside the compact window.
+- Switching position formats and time systems, orthometric height, solution scroll-back, PPP-AR labels, input stream indicators and a log panel are outside this slice.
+  Tests cover pure display logic and the controller's readiness/session mapping with an in-process mock.
+  Live session tests check persistent lifecycle states; transient display states are tested with constructed models.
 
 ## Conv first slice
 
-- The main window follows RTKCONV: GPST start/end date and clock fields, editable interval choices, input and format, output directory, nine output rows, and Convert, Abort, Options, Plot, Process and Exit. Input formats are Auto plus the fourteen CLI mappings. Auto omits `-r`; it does not infer format by inspecting GNSS files. Browsing uses `rfd` 0.17.2 OS dialogs: default xdg-portal and Wayland features on Linux and native dialogs on Windows. A worker thread opens the dialog, sends the selection or cancellation through a channel, then requests a repaint; the UI only polls and remains responsive. Input uses an open-file dialog, output directory a folder dialog, and output paths a save-file dialog. The form stays locked while a file dialog is pending. No in-window chooser is retained. The form and the log areas scroll inside the window. Conv installs a small `log` logger that writes masked warnings and errors from rfd and conv itself to stderr (other crates, such as graphics driver probing, stay silent as before) and retains the last rfd warning/error for each dialog. If the dialog returns no path with a diagnostic, the message area shows `File dialog unavailable: …`; cancellation without a diagnostic stays silent. Diagnostics are cleared before each dialog, and a successful fallback selection is accepted despite earlier warnings.
-- A controller without egui owns the supervisor and the overwrite/close decisions. Pure modules own automatic naming, argv construction, JSON settings and output display. Every Convert builds one `CommandLine`; its preview is also the executed argv. One pure resolver requires an absolute input path (including after home expansion); a relative input is refused with a message asking for an absolute path or `~/...`. Relative output directories and user-edited output paths resolve against the resolved input file's directory, independently of the selected output directory. The GUI's current directory is never used for conversion paths, because it depends on how the application was launched. A leading `~` alone or followed by `/` expands using `std::env::home_dir()` for input, directory and output fields; an unavailable home directory is an error when expansion is requested. Other `~user` forms remain literal. Paths are normalized lexically, removing `.` and `..` before automatic naming or collision checks. Parent components above the root stay at the root; paths that cannot become absolute using these rules are rejected instead of consulting drive-specific current directories. File-dialog directory hints use these same bases and are absolute; an empty hint uses the OS dialog's default, and browsing can replace an invalid relative input without resolving it. The executable path is also absolute and lexically normalized. Resolution does not access the filesystem or resolve symbolic links. The prepared conversion carries the command and selected output paths together; preview, overwrite checks and argv use those same resolved values without a second resolution pass. The child's working directory is not changed. No `-d` is passed, because that option relocates explicit paths too. Conversion fields and Options are locked while running or awaiting overwrite consent, so the displayed command and pending consent stay tied to the job.
-- All nine output switches are always supplied: `-o -n -g -h -q -l -b -i -s`. An unchecked or unavailable slot gets an empty argv string, including with `-c`, to prevent implicit outputs. OBS, NAV and SBS are initially selected, as are the stored choices for the other six rows; rows GNAV through INAV are available only for RINEX 2.x, and SBS is unavailable for explicitly selected RINEX input. An enabled empty output path is rejected before launch.
-- Automatic paths use the input directory, or the selected output directory. The input's last extension becomes `.obs`, `.nav`, `.gnav`, `.hnav`, `.qnav`, `.lnav`, `.cnav`, `.inav` or `.sbs`; `*` and `?` in the basename become `0`. A generated path equal to the resolved input gets `_` appended, so the overwrite check covers the actual suffixed output. An enabled user-edited path that resolves to the input is rejected with a message, without renaming it. Input and edited path text remain as entered; automatic path fields show the resolved names, including when settings are loaded. Aliases through symbolic links or hard links are not detected: resolution is lexical, and MRTKLIB's own collision check also compares path strings. With RINEX2 Name, use `%r%n0.%yO`, NAV `%r%n0.%yN` for RINEX 2 or GPS-only and `%r%n0.%yP` otherwise, separate NAV suffixes `G H Q L C I`, and `%r%n0_%y.sbs`, in that same directory. MRTKLIB resolves keywords. Directory/naming option changes regenerate unedited paths; edits survive until the input changes. This deliberately preserves explicit user paths when changing options.
-- Options are a modal draft: Cancel discards it; OK validates and applies it. RINEX defaults to 3.04, frequencies to 5, time tolerance to 0.005, Station ID to `0000`, and all seven systems to selected. Other defaults follow RTKCONV's empty headers, zero XYZ/delta and unchecked correction flags. The GUI always passes `-tt`, regardless of interval selection, because the CLI's actual zero initialization differs from its advertised default. `-c` is passed only with RINEX2 Name. Unchecked systems generate separate `-y` arguments; excluded satellites generate one `-x` each, and receiver options remain one argv element. Empty optional header/comment fields are omitted; XYZ and antenna delta default to explicit `0/0/0`.
-- Slash-joined observer, receiver, antenna, XYZ and delta fields reject literal `/`. They also reject an empty field preceding a nonempty one, because the CLI's tokenization would shift its position; trailing empty fields are representable. This is validation of the argv interface, not MRTKLIB configuration parsing.
-- Frequencies is a choice from 1 through 5, mapped to `-f N`. Its hover lists the first-N slot meanings: GPS L1 L2 L5; GLONASS G1 G2; Galileo E1 E5a E5b E6 E5ab; QZSS L1 L5 L2 L6; SBAS L1 L5; BeiDou B1I B3 B2I/B2b B1C B2a; NavIC L5 S. Independent frequency checkboxes would misrepresent the CLI.
-- Unreachable controls remain visible and disabled with reasons: Sep NAV, Phase Shift, the fixed-position checkbox beside Approx Pos XYZ, RunBy, FCN, Unit, Observation Types C/L/D/S (always on), Debug (no trace file) and Abort (needs a progress mode). XYZ edits remain reachable through `-hp`, but decoded metadata may replace them. Plot and Process are disabled for a later slice. Output view buttons are outside this slice.
-- Signal Mask is reachable from Options. Its 108 checkboxes follow RTKCONV's groups and observation-code indices, with actual strings from MRTKLIB's observation-code table, validated against the CLI `setmask`/`obs2code` parser. Galileo's `8I` caption is corrected to `8L`; no other caption is changed or dropped. All choices remain selectable independently of systems and frequencies: MRTKLIB combines those filters with RINEX-version eligibility and available observations. The mask has its own draft; OK applies to the Options draft, Cancel discards it, and cancelling Options also discards an accepted mask draft. Set All and Unset All are separate buttons, affecting every checkbox.
-- Every mask checkbox is initially selected, including for older JSON settings without a mask field. If all 108 are selected, omit `-mask`, preserving MRTKLIB's default of all signals. Otherwise pass exactly one comma-separated allow-list such as `GL1C,EL8L`; `-mask` clears all systems first, so unchecked and undisplayed codes are excluded. An empty selection is refused with a message. The GUI persists the selection in its JSON options; invalid checkbox counts reject the settings file rather than changing its meaning.
-- Output rows fill the available width with browse buttons at the right. Option labels and edits use aligned columns and left-aligned labels. Every conversion combo allows enough popup height for all its choices at the initial window size. Frequencies remains the 1 through 5 choice described above.
-- Before launch, all enabled output paths without `%` are checked for existence, with errors reported. One modal lists existing absolute paths, deduplicated, and offers Overwrite or Cancel. Consent launches the frozen command; it does not expand keywords or parse output files. Paths containing keywords are left to MRTKLIB because their resolved names require GNSS metadata.
-- The one-line message shows the last retained stderr line and, after exit, `exit N`, `exit 255 (-1)`, or the OS signal description. A scrollable log shows retained stderr lines and supervisor errors, with dropped-line counts. These are display text subject to common credential masking and bounds, never parsed as progress or completion metadata. Exit zero alone does not establish that every requested output was retained by MRTKLIB.
-- Closing during a conversion opens a modal with Wait focused by default and Kill and close. Wait keeps the window and job open. Kill and close warns that output files may be incomplete, explicitly kills the child, then waits asynchronously for exit and bounded output draining before closing. Exit and the window close control use the same path; normal completion never kills the child. The supervisor's existing Drop cleanup still protects against an unexpected application teardown.
-- GUI settings include input, format, time fields, output directory, all output choices/paths and their edited flags, and conversion options. They are JSON in `<settings directory>/<GUI executable file stem>.json`, independent of MRTKLIB TOML. They load at startup and save only on close. Missing files use defaults; unreadable or invalid files print a masked warning on stderr and use defaults without touching the file until close. Settings-path resolution errors prevent conversion; save failures are reported on stderr without a fallback directory. Unknown JSON fields are ignored and omitted fields use defaults; invalid format/version/frequency selections reject the file. Editable argv fields are validated when applying Options or converting, so unfinished edits can round-trip.
+- The main window follows RTKCONV: GPST start/end date and clock fields, editable interval choices, input and format, output directory, nine output rows, and Convert, Abort, Options, Plot, Process and Exit.
+  Input formats are Auto plus the fourteen CLI mappings.
+  Auto omits `-r`; it does not infer format by inspecting GNSS files.
+  Browsing uses `rfd` 0.17.2 OS dialogs: default xdg-portal and Wayland features on Linux and native dialogs on Windows.
+  A worker thread opens the dialog, sends the selection or cancellation through a channel, then requests a repaint; the UI only polls and remains responsive.
+  Input uses an open-file dialog, output directory a folder dialog, and output paths a save-file dialog.
+  The form stays locked while a file dialog is pending.
+  No in-window chooser is retained.
+  The form and the log areas scroll inside the window.
+  Conv installs a small `log` logger that writes masked warnings and errors from rfd and conv itself to stderr (other crates, such as graphics driver probing, stay silent as before) and retains the last rfd warning/error for each dialog.
+  If the dialog returns no path with a diagnostic, the message area shows `File dialog unavailable: …`; cancellation without a diagnostic stays silent.
+  Diagnostics are cleared before each dialog, and a successful fallback selection is accepted despite earlier warnings.
+- A controller without egui owns the supervisor and the overwrite/close decisions.
+  Pure modules own automatic naming, argv construction, JSON settings and output display.
+  Every Convert builds one `CommandLine`; its preview is also the executed argv.
+  One pure resolver requires an absolute input path (including after home expansion); a relative input is refused with a message asking for an absolute path or `~/...`.
+  Relative output directories and user-edited output paths resolve against the resolved input file's directory, independently of the selected output directory.
+  The GUI's current directory is never used for conversion paths, because it depends on how the application was launched.
+  A leading `~` alone or followed by `/` expands using `std::env::home_dir()` for input, directory and output fields; an unavailable home directory is an error when expansion is requested.
+  Other `~user` forms remain literal.
+  Paths are normalized lexically, removing `.` and `..` before automatic naming or collision checks.
+  Parent components above the root stay at the root; paths that cannot become absolute using these rules are rejected instead of consulting drive-specific current directories.
+  File-dialog directory hints use these same bases and are absolute; an empty hint uses the OS dialog's default, and browsing can replace an invalid relative input without resolving it.
+  The executable path is also absolute and lexically normalized.
+  Resolution does not access the filesystem or resolve symbolic links.
+  The prepared conversion carries the command and selected output paths together; preview, overwrite checks and argv use those same resolved values without a second resolution pass.
+  The child's working directory is not changed.
+  No `-d` is passed, because that option relocates explicit paths too.
+  Conversion fields and Options are locked while running or awaiting overwrite consent, so the displayed command and pending consent stay tied to the job.
+- All nine output switches are always supplied: `-o -n -g -h -q -l -b -i -s`.
+  An unchecked or unavailable slot gets an empty argv string, including with `-c`, to prevent implicit outputs.
+  OBS, NAV and SBS are initially selected, as are the stored choices for the other six rows; rows GNAV through INAV are available only for RINEX 2.x, and SBS is unavailable for explicitly selected RINEX input.
+  An enabled empty output path is rejected before launch.
+- Automatic paths use the input directory, or the selected output directory.
+  The input's last extension becomes `.obs`, `.nav`, `.gnav`, `.hnav`, `.qnav`, `.lnav`, `.cnav`, `.inav` or `.sbs`; `*` and `?` in the basename become `0`.
+  A generated path equal to the resolved input gets `_` appended, so the overwrite check covers the actual suffixed output.
+  An enabled user-edited path that resolves to the input is rejected with a message, without renaming it.
+  Input and edited path text remain as entered; automatic path fields show the resolved names, including when settings are loaded.
+  Aliases through symbolic links or hard links are not detected: resolution is lexical, and MRTKLIB's own collision check also compares path strings.
+  With RINEX2 Name, use `%r%n0.%yO`, NAV `%r%n0.%yN` for RINEX 2 or GPS-only and `%r%n0.%yP` otherwise, separate NAV suffixes `G H Q L C I`, and `%r%n0_%y.sbs`, in that same directory.
+  MRTKLIB resolves keywords.
+  Directory/naming option changes regenerate unedited paths; edits survive until the input changes.
+  This deliberately preserves explicit user paths when changing options.
+- Options are a modal draft: Cancel discards it; OK validates and applies it.
+  RINEX defaults to 3.04, frequencies to 5, time tolerance to 0.005, Station ID to `0000`, and all seven systems to selected.
+  Other defaults follow RTKCONV's empty headers, zero XYZ/delta and unchecked correction flags.
+  The GUI always passes `-tt`, regardless of interval selection, because the CLI's actual zero initialization differs from its advertised default.
+  `-c` is passed only with RINEX2 Name.
+  Unchecked systems generate separate `-y` arguments; excluded satellites generate one `-x` each, and receiver options remain one argv element.
+  Empty optional header/comment fields are omitted; XYZ and antenna delta default to explicit `0/0/0`.
+- Slash-joined observer, receiver, antenna, XYZ and delta fields reject literal `/`.
+  They also reject an empty field preceding a nonempty one, because the CLI's tokenization would shift its position; trailing empty fields are representable.
+  This is validation of the argv interface, not MRTKLIB configuration parsing.
+- Frequencies is a choice from 1 through 5, mapped to `-f N`.
+  Its hover lists the first-N slot meanings: GPS L1 L2 L5; GLONASS G1 G2; Galileo E1 E5a E5b E6 E5ab; QZSS L1 L5 L2 L6; SBAS L1 L5; BeiDou B1I B3 B2I/B2b B1C B2a; NavIC L5 S. Independent frequency checkboxes would misrepresent the CLI.
+- Unreachable controls remain visible and disabled with reasons: Sep NAV, Phase Shift, the fixed-position checkbox beside Approx Pos XYZ, RunBy, FCN, Unit, Observation Types C/L/D/S (always on), Debug (no trace file) and Abort (needs a progress mode).
+  XYZ edits remain reachable through `-hp`, but decoded metadata may replace them.
+  Plot and Process are disabled for a later slice.
+  Output view buttons are outside this slice.
+- Signal Mask is reachable from Options.
+  Its 108 checkboxes follow RTKCONV's groups and observation-code indices, with actual strings from MRTKLIB's observation-code table, validated against the CLI `setmask`/`obs2code` parser.
+  Galileo's `8I` caption is corrected to `8L`; no other caption is changed or dropped.
+  All choices remain selectable independently of systems and frequencies: MRTKLIB combines those filters with RINEX-version eligibility and available observations.
+  The mask has its own draft; OK applies to the Options draft, Cancel discards it, and cancelling Options also discards an accepted mask draft.
+  Set All and Unset All are separate buttons, affecting every checkbox.
+- Every mask checkbox is initially selected, including for older JSON settings without a mask field.
+  If all 108 are selected, omit `-mask`, preserving MRTKLIB's default of all signals.
+  Otherwise pass exactly one comma-separated allow-list such as `GL1C,EL8L`; `-mask` clears all systems first, so unchecked and undisplayed codes are excluded.
+  An empty selection is refused with a message.
+  The GUI persists the selection in its JSON options; invalid checkbox counts reject the settings file rather than changing its meaning.
+- Output rows fill the available width with browse buttons at the right.
+  Option labels and edits use aligned columns and left-aligned labels.
+  Every conversion combo allows enough popup height for all its choices at the initial window size.
+  Frequencies remains the 1 through 5 choice described above.
+- Before launch, all enabled output paths without `%` are checked for existence, with errors reported.
+  One modal lists existing absolute paths, deduplicated, and offers Overwrite or Cancel.
+  Consent launches the frozen command; it does not expand keywords or parse output files.
+  Paths containing keywords are left to MRTKLIB because their resolved names require GNSS metadata.
+- The one-line message shows the last retained stderr line and, after exit, `exit N`, `exit 255 (-1)`, or the OS signal description.
+  A scrollable log shows retained stderr lines and supervisor errors, with dropped-line counts.
+  These are display text subject to common credential masking and bounds, never parsed as progress or completion metadata.
+  Exit zero alone does not establish that every requested output was retained by MRTKLIB.
+- Closing during a conversion opens a modal with Wait focused by default and Kill and close.
+  Wait keeps the window and job open.
+  Kill and close warns that output files may be incomplete, explicitly kills the child, then waits asynchronously for exit and bounded output draining before closing.
+  Exit and the window close control use the same path; normal completion never kills the child.
+  The supervisor's existing Drop cleanup still protects against an unexpected application teardown.
+- GUI settings include input, format, time fields, output directory, all output choices/paths and their edited flags, and conversion options.
+  They are JSON in `<settings directory>/<GUI executable file stem>.json`, independent of MRTKLIB TOML.
+  They load at startup and save only on close.
+  Missing files use defaults; unreadable or invalid files print a masked warning on stderr and use defaults without touching the file until close.
+  Settings-path resolution errors prevent conversion; save failures are reported on stderr without a fallback directory.
+  Unknown JSON fields are ignored and omitted fields use defaults; invalid format/version/frequency selections reject the file.
+  Editable argv fields are validated when applying Options or converting, so unfinished edits can round-trip.
 
 ## Plot
 
-The plot follows RTKPLOT except for the explicitly specified improvements below. RTKPLOT source references use the supplied RTKLIB tree's `app/winapp/rtkplot/` unless prefixed by `appcmn/`. References prefixed `rtktrace/` use the `hal1278/rtktrace` repository at commit `af22705`.
+The plot follows RTKPLOT except for the explicitly specified improvements below.
+RTKPLOT source references use the supplied RTKLIB tree's `app/winapp/rtkplot/` unless prefixed by `appcmn/`.
+References prefixed `rtktrace/` use the `hal1278/rtktrace` repository at commit `af22705`.
 
-- `mrtklib-egui-plot` opens two MRTKLIB text solution files through File → Open Solution-1/2. A file drop targets Solution-2 only when Data 2 is selected alone; otherwise it targets Solution-1 (`plotmain.cpp:337–395`). Each dataset still accepts one file. Reload rereads both remembered inputs, in order, and selects each successfully loaded dataset as RTKPLOT does; Clear removes both datasets and remembered paths (`plotdata.cpp:1368–1448`). File loading and native dialogs run on workers, outside the UI thread. There is one reader worker overall, including a two-file reload or launch restore. Clear retains ownership of an unfinished reader and discards its result, so repeated Open/Clear cannot accumulate readers. It also discards a pending dialog selection. Failed reads retain that dataset and report its error; other successful reads in the batch still apply.
-- Supported coordinates are LLH in decimal degrees or DMS, ECEF XYZ, and relative ENU baseline, with calendar or week/TOW timestamps, LF or CRLF, and whitespace separators. A recognised column heading is mandatory. Its coordinate labels, complete field order, optional velocity suffix and time-system label are validated. Covariance and velocity fields are checked as finite numbers, even though this slice does not draw them. Other separators and NMEA are refused. Every nonempty data line that fails the layout is counted in the info window.
-- Times are held in GPST, as RTKPLOT does. UTC files are converted to GPST when read, and JST files to UTC by subtracting 9 h first; MRTKLIB shifts UTC/JST before formatting both calendar and week/TOW (`src/pos/mrtk_sol.c:1797–1813`), so the shift is undone for both. A file that needed conversion shows a warning. The conversion uses a leap-second table built into `mrtklib-egui-plotkit` (`leap.rs`); only plot uses it, while navi takes `leapSeconds` from the RPC so that it shows the backend's value. The table must match MRTKLIB's (`src/core/mrtk_time.c`); an opt-in test compares them (`MRTKLIB_EGUI_TEST_MRTKLIB_DIR=... cargo test -p mrtklib-egui-plotkit -- --ignored real_mrtklib`). Calendar arithmetic and week/TOW share a continuous seconds axis measured from 1980-01-06. The writer gives calendar and week/TOW the same heading labels, with padding that also depends on fractional precision and the separator, so a heading cannot uniquely encode the time format. The first complete valid row resolves the two disjoint timestamp grammars; subsequent rows must use that same format. Invalid rows before resolution are counted too. This exception avoids guessing a format from spacing.
-- Data 1 and Data 2 toggle independently, allowing either, both overlaid, or neither. Either button clears Data 1-2; Data 1-2 clears both input buttons and can itself be toggled off (`plotmain.dfm:553–676`, `plotmain.cpp:1073–1102`). A successful load selects its dataset and clears difference mode (`plotdata.cpp:63–66`). Difference is available only for Gnd Trk/Position with both datasets nonempty. On NSat it stays disabled; a previously selected difference draws no NSat series, following `DrawNsat`. It subtracts the two converted ENU series with ordered, one-to-one epoch matches within the reference build’s default TTOL of 0.025 seconds, inclusive, without interpolation. Matching compares stored GPST integer nanoseconds against ±25,000,000 ns, so floating-point rounding at recent epochs cannot reject the boundary (`plotcmn.cpp:560–563`). Inputs are deduplicated when read, before matching. Time and index come from solution 1, Q is the larger numeric Q, and the quality filter is applied after matching (`plotcmn.cpp:552–579`).
+- `mrtklib-egui-plot` opens two MRTKLIB text solution files through File → Open Solution-1/2.
+  A file drop targets Solution-2 only when Data 2 is selected alone; otherwise it targets Solution-1 (`plotmain.cpp:337–395`).
+  Each dataset still accepts one file.
+  Reload rereads both remembered inputs, in order, and selects each successfully loaded dataset as RTKPLOT does; Clear removes both datasets and remembered paths (`plotdata.cpp:1368–1448`).
+  File loading and native dialogs run on workers, outside the UI thread.
+  There is one reader worker overall, including a two-file reload or launch restore.
+  Clear retains ownership of an unfinished reader and discards its result, so repeated Open/Clear cannot accumulate readers.
+  It also discards a pending dialog selection.
+  Failed reads retain that dataset and report its error; other successful reads in the batch still apply.
+- Supported coordinates are LLH in decimal degrees or DMS, ECEF XYZ, and relative ENU baseline, with calendar or week/TOW timestamps, LF or CRLF, and whitespace separators.
+  A recognised column heading is mandatory.
+  Its coordinate labels, complete field order, optional velocity suffix and time-system label are validated.
+  Covariance and velocity fields are checked as finite numbers, even though this slice does not draw them.
+  Other separators and NMEA are refused.
+  Every nonempty data line that fails the layout is counted in the info window.
+- Times are held in GPST, as RTKPLOT does.
+  UTC files are converted to GPST when read, and JST files to UTC by subtracting 9 h first; MRTKLIB shifts UTC/JST before formatting both calendar and week/TOW (`src/pos/mrtk_sol.c:1797–1813`), so the shift is undone for both.
+  A file that needed conversion shows a warning.
+  The conversion uses a leap-second table built into `mrtklib-egui-plotkit` (`leap.rs`); only plot uses it, while navi takes `leapSeconds` from the RPC so that it shows the backend's value.
+  The table must match MRTKLIB's (`src/core/mrtk_time.c`); an opt-in test compares them (`MRTKLIB_EGUI_TEST_MRTKLIB_DIR=... cargo test -p mrtklib-egui-plotkit -- --ignored real_mrtklib`).
+  Calendar arithmetic and week/TOW share a continuous seconds axis measured from 1980-01-06.
+  The writer gives calendar and week/TOW the same heading labels, with padding that also depends on fractional precision and the separator, so a heading cannot uniquely encode the time format.
+  The first complete valid row resolves the two disjoint timestamp grammars; subsequent rows must use that same format.
+  Invalid rows before resolution are counted too.
+  This exception avoids guessing a format from spacing.
+- Data 1 and Data 2 toggle independently, allowing either, both overlaid, or neither.
+  Either button clears Data 1-2; Data 1-2 clears both input buttons and can itself be toggled off (`plotmain.dfm:553–676`, `plotmain.cpp:1073–1102`).
+  A successful load selects its dataset and clears difference mode (`plotdata.cpp:63–66`).
+  Difference is available only for Gnd Trk/Position with both datasets nonempty.
+  On NSat it stays disabled; a previously selected difference draws no NSat series, following `DrawNsat`.
+  It subtracts the two converted ENU series with ordered, one-to-one epoch matches within the reference build’s default TTOL of 0.025 seconds, inclusive, without interpolation.
+  Matching compares stored GPST integer nanoseconds against ±25,000,000 ns, so floating-point rounding at recent epochs cannot reject the boundary (`plotcmn.cpp:560–563`).
+  Inputs are deduplicated when read, before matching.
+  Time and index come from solution 1, Q is the larger numeric Q, and the quality filter is applied after matching (`plotcmn.cpp:552–579`).
 - Because both datasets are held in GPST, files written in different time systems can be overlaid and differenced.
-- The plots are Gnd Trk (East versus North, equal metres on both axes), Position (East, North, Up versus time), and NSat (satellite count, differential age in seconds, AR ratio versus time). Plot1/Plot2/Plot3 independently enable the three panels of Position and NSat and are shared between them, as RTKPLOT shares `BtnOn1`–`BtnOn3` between its time plots (`plotdraw.cpp:775,817`); they are hidden for Gnd Trk. Quality uses independent FIX, FLOAT, SBAS, DGPS, SINGLE and PPP buttons, plus All. A button appears only for a quality that occurs in the shown data before the quality filter (in difference mode, the matched larger Q), so no button does nothing. The rtktrace-derived indexed visibility mask passes an epoch exactly when its quality is enabled (`rtktrace/src/plot/data_view.cpp:7–10`, `rtktrace/include/rtktrace/plot/data_view.hpp:21–23`). Enabled button colours are exactly rtktrace’s File 1 palette: green, amber, magenta, blue, red and teal; disabled buttons are dark gray (`rtktrace/include/rtktrace/plot/batch.hpp:40–48`, `rtktrace/src/full/gui.cpp:697–715`). All switches every quality off when all are on, otherwise on, including Q0 and Q7; these existing unknown/dead-reckoning endpoints remain visible unless an older exact-quality setting excluded them. There are no additional endpoint buttons, as rtktrace has none; Q0/Q7 epochs stay visible so that no data are hidden without a control to show them. Time-series lines break at gaps exceeding 300 seconds; ground-track lines remain connected. Epochs are sorted and deduplicated when read.
-- Both absolute datasets use the origin derived from solution 1, even when only Data 2 is displayed (`plotmain.cpp:2138–2206`). Origins for absolute data are Start Pos, End Pos, Average Pos (default), Linear Fit Pos, Base Station from `% ref pos`, and user Lat/Lon/Hgt. Average Pos averages ECEF coordinates. Linear Fit Pos fits each ECEF component against time and subtracts the moving fitted origin, using its instantaneous latitude/longitude for ENU. It requires distinct epoch times. Relative ENU data pass through for every origin choice. A missing reference position makes Base Station unavailable; it does not silently substitute another origin. Conversion succeeds or fails independently per dataset: an origin failure removes only the samples of the dataset that needs that origin, even if it is hidden. Other datasets remain displayed, and the info window identifies the failed slot. Valid Options can still be applied; per-dataset conversion errors clear when conversion succeeds (including NSat, which needs no position origin), the dataset is removed, or Clear is used.
-- WGS84 LLH/ECEF and local ENU are display conversions. The GUI does not read any other GNSS format or compute a positioning solution. `% ref pos` is ECEF for XYZ output and LLH for the other layouts; unreadable reference metadata is reported explicitly. Tokyo-datum coordinates are refused because this slice implements WGS84 display geometry only. A declared geodetic height is used as stored, with an explicit warning that no geoid restoration is performed, matching RTKPLOT’s numerical treatment without hiding its limitation.
-- Viewport ranges are owned separately from sample revisions. A Quality change redraws the filtered samples without changing limits, including an empty filter (`plotmain.cpp:1318–1325`). Applying Options also keeps the current view (`plotmain.cpp:750–788`). `egui_plot` stays pinned to 0.37.0, with its automatic bounds, scrolling, zooming, dragging, boxed zoom and double-click reset disabled; its defaults do not implement RTKPLOT's interaction rules. Time-series panels use one shared time range (`plotmain.cpp:1962–1990`).
-- Fit Horizontal calls FitTime for time plots and FitRange for Gnd Trk; Fit Vertical calls FitRange (`plotmain.cpp:891–905`). FitTime uses the full dataset's first and last epochs, independently of Quality, with no percentage margin (`plotmain.cpp:2430–2467`). The single-epoch case is `[t−300 s, t]`, preserving the reference's sequential assignments (`plotmain.cpp:2452–2458`, `plotmain.h:34`). FitRange uses quality-filtered ENU extrema plus a fixed 0.05 m on each side, rather than a percentage. Either ground-track fit fits both axes, choosing the larger metres-per-pixel scale so all data fit with equal aspect (`plotmain.cpp:2525–2599`). An explicit track fit waits for egui's axis-label layout to settle so later label measurement cannot clip the fitted data. Track resizing then preserves that scale; time panels preserve their limits (`plotmain.cpp:124–131`, `appcmn/graph.cpp:97–105`).
-- Auto Fit is an OFF/ON option, default ON (`plotopt.dfm:570–582`, `plotmain.cpp:2652`). A successful file load always fits time; for Gnd Trk or Position with Auto Fit ON it fits track and position ranges, otherwise it sets the default ranges (`plotdata.cpp:84–90`). A plot-type change preserves time; it fits the current track/position range with Auto Fit ON, otherwise it sets that plot's default range (`plotmain.cpp:1992–2005`). Center Origin sets Position to ±Y-range (default 5); Gnd Trk starts with ±Y-range on each axis and expands to equal aspect (`plotmain.cpp:2470–2493`). NSat defaults are 0…30 satellites, 0…10 seconds age and 0…20 ratio (`plotmain.cpp:64–65,2495–2503,2732`). Its Fit Vertical button is hidden and Center Origin is disabled, as in RTKPLOT (`plotmain.cpp:2293–2310`).
-- A compact range button beside Center Origin offers RTKPLOT's complete list: 5cm, 10cm, 20cm, 50cm, 1m, 2m, 5m, 10m, 20m, 50m, 100m, 200m, 500m, 1km, 2km, 5km, 10km, 20km, 50km, 100km, 200km, 500km and 1000km (`plotmain.dfm:1705–1742`). Its popup has no scroll area and shows all items, as the reference sizes the list to its item count (`plotmain.cpp:1165–1175`). Selection writes the same Y-range in metres used by Options and immediately centres the current plot, preserving shared time and ground-track equal aspect; selecting the current item centres again (`plotmain.cpp:1177–1195,2470–2493`). There is no separate preset index in settings: the existing Y-range is persisted, and the button displays a custom Options value in metres without rounding to a preset. The range control is disabled for NSat, matching Center Origin (`plotmain.cpp:2293–2300`).
-- Left-drag pans Gnd Trk in both axes; right-drag scales both axes about the graph centre by `2^(vertical displacement/100)`. In time plots, left-drag inside a panel pans time and that component; on its left axis it pans only that component; below the bottom panel it pans only time. Right-drag inside a panel or below the bottom panel scales shared time by `2^(−horizontal displacement/100)`; on a left axis it scales that component by `2^(vertical displacement/100)`. Right-axis drags do nothing. Gesture bounds are captured at mouse-down (`plotmain.cpp:1374–1410,1472–1546,1581–1642`; axis areas: `appcmn/graph.cpp:576–582`). Displacements use egui logical pixels.
-- The wheel uses the RTKPLOT factor `2^(−WheelDelta/1200)`, i.e. `2^(−notches/10)`. In time plots, a panel interior or its left/right axis scales only that component about its centre. RTKPLOT scales shared time only below the bottom panel (`plotmain.cpp:1703–1736`); this frontend deliberately extends that wheel action to the time-label band below every visible panel because every panel displays its own time labels. The bands span the plot's horizontal extent, between its bottom edge and the next panel or canvas bottom. Hidden components do not prevent the remaining labels from zooming shared time. Drag and double-click areas retain the reference mapping. Gnd Trk scales both axes about the graph centre, as RTKPLOT does (`plotmain.cpp:1716–1719`, `appcmn/graph.cpp:135–139`). A wheel line corresponds to one 120-unit notch; point/page events are normalized using egui's configured line-scroll speed. Scale limits remain 2e−5…1e7 units per logical pixel (`appcmn/graph.cpp:11–12,135–139`). Double-click centres Gnd Trk on the clicked coordinates or centres shared time on the clicked time, keeping scale (`plotmain.cpp:1435–1459`).
-- Show Grid is a Gnd Trk-only compact toolbar icon with hover text and an accessibility label. It defaults ON and is persisted in Plot JSON settings; older files without the field also default ON (`BtnShowGrid`, `plotmain.cpp:921,1134–1140,2322,2370–2377`; `plotmain.dfm` around 1171). It gates the entire ground-track grid, its box, labels, origin dot and the 20-pixel centre cross, including when Grid/Grid Label is OFF (`plotdraw.cpp:108–123`). Ground track has no native outside axis ticks or titles: Grid/Label supplies its own inside labels, and all grid formats use the final plot transform and frame clipping, so resizing cannot restore hidden tick labels. Time plots retain their existing axes and grids independently of both ground-track controls (`plotdraw.cpp:629–635,843–849`).
-- Options' Grid/Grid Label choices are OFF, Grid, Grid/Label, Circles and Circles/Label (`plotopt.dfm:765–779`, applied at `plotopt.cpp:134`). The JSON option `show_g_label` defaults to 1 (Grid), matching the constructor and INI default (`plotmain.cpp:162,2655`); missing fields in older JSON retain that default and out-of-range selections are rejected. With Show Grid on, OFF draws only the centre cross. Grid draws rectangular lines (solid zero axes, dotted other lines), the origin dot and box, without numeric labels. Grid/Label adds numeric East labels just inside the bottom edge and rotated North labels just inside the left edge (`plotdraw.cpp:119–121`, `appcmn/graph.cpp:204–265,292–304,438–465`). Circles draws dotted concentric rings about coordinate (0,0), solid zero axes, the origin dot and box. Circles/Label adds signed coordinate values along the zero axes: East values below y=0 and North values to the right of x=0, omitting zero. These are not a separate sequence of unsigned radius captions; they share `DrawGridLabel` with the rectangular grid, using positions 7 instead of 2/4 (`plotdraw.cpp:115–117`, `appcmn/graph.cpp:228–265,530–573`). Circle radii follow the x tick interval; floor/ceil boundary rings are included even when the origin is outside the viewport. Label spacing doubles the tick interval below 50 pixels without changing the lines or rings (`appcmn/graph.cpp:538–572`). The frontend samples clipped visible circle arcs into one-point dots; the native reference uses GDI's dotted ellipse, so exact rasterization differs.
-- Grid lines are silver: x=0 and y=0 are solid, while other lines use the reference's `psDot` pattern, represented by alternating one-point dashes and gaps (`plotdraw.cpp:108–122,629–635,843–849`; `appcmn/graph.cpp:204–223,292–302`). Numeric grid ticks choose 1/2/5×powers of ten at least 30 pixels apart; calendar ticks use RTKPLOT's time-step list at least 60 pixels apart (`appcmn/graph.cpp:170–185`). Ground-track numeric labels and numeric time-axis labels double the tick step when needed for 50-pixel spacing, without changing the grid (`appcmn/graph.cpp:299–302`). Numeric precision and calendar tick text follow `NumText` and `TimeText` (`appcmn/graph.cpp:188–201`). The existing week/TOW text option keeps its week/TOW labels.
-- The status bar has one unwrapped summary line per shown dataset, in slot order, followed by one cursor line. Difference mode has one `[1-2]` summary over the unfiltered matched epochs. Summaries convert stored GPST through the same display-time function as the plot before formatting timestamps or comparing calendar dates. All status timestamps (summaries, inspected epochs and time-panel cursor coordinates) use that display-time axis, with no second conversion of already displayed coordinates. Summaries use the selected time format/system, first/last times (the end date is omitted only on the same calendar day, to keep the line short), `N=` epochs, optional baseline and nonzero `Qn=count (pct%)` entries without quality names. Quality visibility and the viewport do not affect the summaries. Baseline length follows RTKPLOT exactly: the norm of each file ENU vector, or ECEF minus its own base; the minimum in km with one decimal, changing to minimum–maximum only for a spread strictly greater than 100 m (`plotinfo.cpp:208–231`). An absolute dataset without a base omits B. In difference mode B still describes the original solution 1, retaining the RTKPLOT rule. Long summary lines can scroll horizontally instead of wrapping or losing fields.
-- The percentage switch to the right of the status text alternates epochs-present percentages (default) and whole-data-interval percentages; counts and `N=` remain epochs present. The denominator remains `floor(duration_seconds * effective_Hz + 0.5) + 1`, with percentages `quality_count / denominator * 100` (`rtktrace/src/analysis/statistics.cpp:37–65`); unknown rates and single epochs omit interval percentages. The range is the whole individual dataset interval, or the matched interval for `[1-2]`, independently of the viewport and quality filter. Statistics retain exact GPST integer nanoseconds separately from floating-point plot coordinates; fractional seconds retain nine digits, padding with zeroes and rounding up when digit ten is at least 5 (`rtktrace/src/analysis/gps_time.cpp:82–104`).
-- Rate estimation uses rtktrace's shortest positive adjacent interval (`rtktrace/src/analysis/sample_rate.cpp:8–29`), changing only the cutoff to ignore intervals below 1 ms (rtktrace's 5 ms gives no rate for 200 Hz data; shorter intervals are duplicate epochs); a single epoch shows `—` and no interval percentages. A wrong estimate is corrected by a positive, finite manual rate saved with its file, shown as `1 Hz (manual)` instead of the estimate's `1 Hz`, with Use estimated clearing the override (`rtktrace/src/full/gui.cpp:467–472,487–502`); `[1-2]` uses Solution 1's override. On reading, sorted epochs at most 1 ms apart are treated as duplicates and only the first row in the file is kept, so everything uses deduplicated data and the info window reports the removed count (`MRTKLIB src/pos/mrtk_sol.c:953–962`). In `% Interval` mode each summary shows its denominator as `N=present/expected (rate)`, for example `N=3594/3595 (1.00 Hz)`; the mode button has a fixed width. Estimated rates are rounded to three significant digits for both display and interval percentages (for example `1.00 Hz`, `0.0333 Hz`, `20.0 Hz`), because one 0.999 s interval in a real-time file otherwise shows `1.001001 Hz`, while fixed 0.1 Hz steps would show 30 s data as 0 Hz; manual values retain their entered precision.
-- With Show Track on, a ground-track click selects the first quality-visible epoch of the primary dataset within `MarkSize / 2 + 2` logical pixels (integer division); it consumes the pan gesture. Difference ground tracks cannot be picked (`plotmain.cpp:1472–1488`, `plotcmn.cpp:396–422`). When the selected epoch belongs to Data 1 and Data 2 is shown, the Data 2 epoch within 0.05 seconds (RTKPLOT's 2×DTTOL) of its time is marked too (`plotdraw.cpp:157–200,659–690`). This follows RTKPLOT: `UpdateTime()` re-synchronises both `SolIndex` entries to the selected time within DTTOL (`plotmain.cpp:2068–2109`). Track picking, time-cursor dragging and animation call it (`plotmain.cpp:1480,1657,1959`); scrolling updates the plot after changing the primary index (`plotmain.cpp:1352–1365`). Following Data 1 time for the Data 2 mark is not a deviation. Cursor text describes an epoch only within six logical pixels (a little more than the default mark radius) of its plotted point (both coordinates, including time panels), across either shown dataset, and uses its actual `[1]`, `[2]` or `[1-2]` identifier. Otherwise it reports coordinates under the pointer: E/N on Gnd Trk, plus the pointer's latitude and longitude about the origin for absolute non-difference data under the same LLH/ENU rule (`plotinfo.cpp:376–393`), or time and the hovered panel's value on time plots. Outside the plots the cursor line is empty. Absolute Gnd Trk/Position epochs show both LLH and ENU when the measured status font width permits; otherwise the LLH/ENU button chooses one (default ENU), following RTKPLOT’s cursor-text switch (`plotmain.cpp:1299–1302`); when both fit, the button is hidden. A hovered epoch decides; the decision is kept while the pointer leaves it, so the button stays reachable, and is otherwise made on the selected or first epoch after a width or sample change; the fit test measures the text column, whose width the button column does not change, so the button does not flicker at the threshold. Relative ENU and difference epochs show ENU because they have no absolute LLH; difference Height mode also appends the plotted `dH`. Cursor quality is `Q=n`, without a quality name.
-- Malformed-line counts, reader warnings (including geodetic-height and UTC/JST notes), per-slot file errors, settings errors and other diagnostics appear in Plot information. A `⚠ count` button stays at the right of the status bar while items exist and turns red when any is an error; closing the window does not dismiss items. Dataset diagnostics are replaced only with a successful replacement of that dataset or Clear. Distinct failed-open errors are retained per slot until a successful open of that slot or Clear. Other encountered errors remain until Clear, so that a transient error is not lost before it is read; the cost is that they accumulate until Clear. The window scrolls, and every displayed item is credential-masked.
-- Show Track starts OFF (`plotmain.dfm:875–930`). It gates the current-epoch marks, time cursor lines, the time scroll bar below the toolbar (RTKPLOT keeps it in the toolbar panel, `plotmain.dfm:1575–1697`), and Animate. Fix controls are disabled while it is OFF; switching it OFF stops animation and clears Fix Horiz and Fix Vert, retaining Fix Center (`plotmain.cpp:939–947,1220–1230,2311–2340`). Ground-track and Position statistics remain visible in either mode (`plotdraw.cpp:130–155,637–657`); full-track error circles are suppressed in Show Track, while selected-epoch error circles remain (`plotdraw.cpp:158–219,437–439`). This GUI has no covariance overlay, so there are no error circles to suppress. Velocity arrows and arbitrary background images are outside its supported plots.
-- Playback operates on raw, unfiltered epoch indices: Data 1, or Data 2 when it alone is selected, including Data 1 indices in difference mode. Unfiltered and filtered samples share one display conversion before filtering: their times use the selected GPST/UTC axis and their third Position component uses U/Height, while raw dataset indices and GPST nanoseconds remain unchanged for selection and matching. Missing Height in relative ENU data also removes its current third-panel mark and vertical following. Quality changes retain the selection and do not suppress its current mark (`plotmain.cpp:1352–1365,1900–1915`; `plotdraw.cpp:158–219,659–710,861–889`). Position difference shows the time cursor without a point mark; NSat difference shows neither (`plotdraw.cpp:659–710,861–889`). The time scroll bar spans the selected dataset and selects an epoch directly by its thumb; arrows move one epoch and track clicks page by ten (`plotmain.cpp:2076–2090`, `plotmain.dfm:1671–1697`). With Show Track on the summary lines become current-epoch lines (time, coordinates or NS/AGE/RATIO, and Q, in the cursor-text presentation): one per shown dataset, `[1]` for the selection and `[2]` for the nearest Data 2 epoch less than 0.05 s from it (the mark rule), or `[2] no epoch within 0.05 s`; in difference mode one `[1-2]` line for the matched difference. The cursor line remains separate. RTKPLOT shows only the selected solution (`plotinfo.cpp:18–23,88–130`); one line per dataset keeps the line count of the summaries, so the layout does not move when Show Track is toggled, and Data 2 can be read during playback. RTKPLOT re-synchronises the Data 2 index by stepping from its previous position (`plotmain.cpp:2092–2109`), which for data faster than 20 Hz can stop at an epoch that is not the nearest; this GUI takes the nearest one. With Show Track off the whole-data summaries and percentages remain available.
-- Animate starts and stops at the current selection, without rewinding, advances `AnimCycle` epochs per timer tick, clamps to the last epoch and stops there. A nonpositive step acts as one (`plotmain.cpp:986–998,1279–1284,1900–1915`). Options stores an integer animation step (default 10 epochs) and unsigned refresh cycle (default 100 ms). Both fields are backward-compatible JSON options (`plotopt.cpp:88–89,176–177`, `plotopt.dfm:906–923,1018–1025`, `plotmain.cpp:2666–2667,2829–2830`). This GUI chooses to advance at most one step per due repaint frame, without catch-up bursts or worker threads, request the next repaint after the refresh interval, and stop ticks when the refresh cycle is zero. These are GUI timing rules, chosen to keep input responsive; they are not a claim about RTKPLOT's native timer behaviour.
-- Fix Center is visible only on Gnd Trk and defaults ON; it centres both axes on the current primary position, or the matched difference (`plotmain.dfm:1049–1059`, `plotdraw.cpp:86–100`). Fix Horiz is visible on Position and NSat and defaults OFF; Fix Vert is visible only on Position and initially ON (`plotmain.cpp:2312–2324`, `plotmain.dfm:678–688,933–944`). In difference mode Position follows the displayed difference of the current epoch. RTKPLOT follows solution 1 there (`SolToPos(SolData+sel, ...)`, `plotdraw.cpp:609–620`), which for moving data centres the panels far from the difference series, so this is a deliberate deviation; without a matched difference epoch nothing is followed. Height follows the displayed component. NSat follows time only (`plotdraw.cpp:825–835`). Fix Horiz resets the cursor to the horizontal centre when toggled; a primary drag within a time panel then moves its fixed horizontal fraction, limited to the plot edges, instead of panning time (`plotmain.cpp:961–965,1232–1240,1606–1623`). Fix Center/Horiz/Vert affect navigation only while Show Track is on and the corresponding control is enabled for the current plot and selected data. Fix Vert prevents vertical panning when enabled (`plotmain.cpp:1612–1614,1627–1629`); scaling and wheel zoom remain available. Ground-track dragging still runs with Fix Center, but the draw pass recentres it; the reference track pan guard checks Fix Horiz (`plotmain.cpp:1587–1593,1625–1642,1703–1736`). FitRange, including Auto Fit on file load or plot-type change, releases Fix Horiz (`plotmain.cpp:1992–2005,2535–2536`). Fix Horiz blocks double-click centring (`plotmain.cpp:1443–1459`).
-- On time plots a primary drag starting within five pixels of the time cursor line, in any panel, chooses the first raw epoch at or after the pointer time, clamping to either end. RTKPLOT instead draws a small handle at the top of the first panel and drags only from it; the lone circle was hard to recognise as part of the line, so this GUI draws no handle. Fix Horiz disables this drag (`plotmain.cpp:1509–1523,1644–1660`, `plotdraw.cpp:699–706,878–885`). Arrow keys pan, Shift reduces the pan from ten to one logical pixel, and Ctrl+arrows scale by 1.05; they do not step epochs. Fixed axes constrain panning according to the literal checks, including the reference's first-component-only vertical key guard before the draw pass recentres Position (`plotmain.cpp:1760–1815`).
-- The compact toolbar has menus and file paths on the first row and plotting controls on the second. Combos and buttons use their content width; all controls fit the default 1000-pixel window. Dataset buttons are `1`, `2`, `1-2`. Show Track, Fix Center/Horiz/Vert, Animate, Fit Horizontal, Fit Vertical and Center Origin are drawn from egui shapes, with their full hover text and accessibility labels. File paths share the remaining first-row width: directories receive a middle `...` by measured text width, retaining the full filename and the full masked path on hover. A filename wider than its entire allocation scrolls horizontally rather than being shortened.
-- Position’s U/Height switch has a fixed control width to keep the toolbar and panels in place and is explicitly rtktrace-derived: U is ENU about the selected origin, while Height is the epoch's absolute ellipsoidal height in metres (`rtktrace/src/full/gui.cpp:843–851`, `rtktrace/src/plot/axis.cpp:44–55`, `rtktrace/src/plot/batch.cpp:25–36`). Difference Height is the subtraction of the matched ellipsoidal heights (`rtktrace/src/plot/data_view.cpp:29–48`, `rtktrace/src/analysis/relative.cpp:24–25`). Switching fits only the third component, whose values change, and preserves shared time and East/North limits. Relative ENU files have no absolute height: their third series is absent in Height mode and the persistent info indicator explains why. Statistics of the third Position panel use the displayed U or Height values.
-- Options offers `www/ssss`, `h:m:s GPST` or `h:m:s UTC` time (axes and texts; UTC uses the leap-second table). RTKPLOT's `h:m:s LT` is not offered: RTKPLOT uses a fixed UTC+9 on its axes but the computer's time zone in its texts (`plotcmn.cpp:59–64`); other time systems are a later decision. Options also offers degrees or DMS coordinate text, Show Statistics (off by default), Mark/Line, Mark or Line style, mark sizes 1/2/3/4/5/10/15/20, origin fields, Auto Fit (ON by default), Center Origin Y-range and the five ground-track grid formats. The dialog edits a draft; OK validates and applies it, Cancel discards it. Combo lists show all choices. One page contains three label/field columns followed by a Map section, without tabs. For this dialog, all sizes and positions come from measured text, shared style values (interaction size, spacing, padding and font height), or the parent layout; no dialog widths, heights or positions are hard-coded. Three egui Grids sit side by side with the shared style's spacing. Before laying out any Grid, the current pass measures every label, every combo choice, and each numeric field's formatted text and suffix with their current fonts, adding style-derived padding, icon spacing and interaction minimums. All three Grids share the resulting uniform label-cell width and uniform field-cell width. Each label/field pair occupies one explicitly sized Grid cell, with the Grid's minimum column width set to that measured row width, so egui's cached column advances cannot position fields over labels. Measurements are recomputed directly on every pass, without cached widths or a measurement/discard cycle; opening the dialog and changing text size therefore use the current geometry on their first frame. The layout grows with font size and label/choice text rather than enforcing a pixel-width limit. Each Map input occupies the full measured width of the three-column block, with its label above it. The column assignment, row order and rough proportions follow `plotopt.dfm` (label/field Left 12/102, 193/283, 373/467); those pixel coordinates are reference information only and are never literal layout dimensions. Omitted options leave no placeholder rows. The mapping below numbers the compacted rows within each column. The Lat/Lon/Hgt label sits below Coordinate Origin in the middle Grid's full-width label cell. Its three fields share that same row, starting at the middle field cell and spanning the remaining middle and right columns to the right Grid's right edge, using the measured positions of the laid-out columns (`plotopt.dfm:211–217,948–970`). Their units appear on hover. The reference's position-picker `...` button is omitted because it is not implemented (`plotopt.dfm:972–985`).
+- The plots are Gnd Trk (East versus North, equal metres on both axes), Position (East, North, Up versus time), and NSat (satellite count, differential age in seconds, AR ratio versus time).
+  Plot1/Plot2/Plot3 independently enable the three panels of Position and NSat and are shared between them, as RTKPLOT shares `BtnOn1`–`BtnOn3` between its time plots (`plotdraw.cpp:775,817`); they are hidden for Gnd Trk.
+  Quality uses independent FIX, FLOAT, SBAS, DGPS, SINGLE and PPP buttons, plus All.
+  A button appears only for a quality that occurs in the shown data before the quality filter (in difference mode, the matched larger Q), so no button does nothing.
+  The rtktrace-derived indexed visibility mask passes an epoch exactly when its quality is enabled (`rtktrace/src/plot/data_view.cpp:7–10`, `rtktrace/include/rtktrace/plot/data_view.hpp:21–23`).
+  Enabled button colours are exactly rtktrace’s File 1 palette: green, amber, magenta, blue, red and teal; disabled buttons are dark gray (`rtktrace/include/rtktrace/plot/batch.hpp:40–48`, `rtktrace/src/full/gui.cpp:697–715`).
+  All switches every quality off when all are on, otherwise on, including Q0 and Q7; these existing unknown/dead-reckoning endpoints remain visible unless an older exact-quality setting excluded them.
+  There are no additional endpoint buttons, as rtktrace has none; Q0/Q7 epochs stay visible so that no data are hidden without a control to show them.
+  Time-series lines break at gaps exceeding 300 seconds; ground-track lines remain connected.
+  Epochs are sorted and deduplicated when read.
+- Both absolute datasets use the origin derived from solution 1, even when only Data 2 is displayed (`plotmain.cpp:2138–2206`).
+  Origins for absolute data are Start Pos, End Pos, Average Pos (default), Linear Fit Pos, Base Station from `% ref pos`, and user Lat/Lon/Hgt.
+  Average Pos averages ECEF coordinates.
+  Linear Fit Pos fits each ECEF component against time and subtracts the moving fitted origin, using its instantaneous latitude/longitude for ENU.
+  It requires distinct epoch times.
+  Relative ENU data pass through for every origin choice.
+  A missing reference position makes Base Station unavailable; it does not silently substitute another origin.
+  Conversion succeeds or fails independently per dataset: an origin failure removes only the samples of the dataset that needs that origin, even if it is hidden.
+  Other datasets remain displayed, and the info window identifies the failed slot.
+  Valid Options can still be applied; per-dataset conversion errors clear when conversion succeeds (including NSat, which needs no position origin), the dataset is removed, or Clear is used.
+- WGS84 LLH/ECEF and local ENU are display conversions.
+  The GUI does not read any other GNSS format or compute a positioning solution.
+  `% ref pos` is ECEF for XYZ output and LLH for the other layouts; unreadable reference metadata is reported explicitly.
+  Tokyo-datum coordinates are refused because this slice implements WGS84 display geometry only.
+  A declared geodetic height is used as stored, with an explicit warning that no geoid restoration is performed, matching RTKPLOT’s numerical treatment without hiding its limitation.
+- Viewport ranges are owned separately from sample revisions.
+  A Quality change redraws the filtered samples without changing limits, including an empty filter (`plotmain.cpp:1318–1325`).
+  Applying Options also keeps the current view (`plotmain.cpp:750–788`).
+  `egui_plot` stays pinned to 0.37.0, with its automatic bounds, scrolling, zooming, dragging, boxed zoom and double-click reset disabled; its defaults do not implement RTKPLOT's interaction rules.
+  Time-series panels use one shared time range (`plotmain.cpp:1962–1990`).
+- Fit Horizontal calls FitTime for time plots and FitRange for Gnd Trk; Fit Vertical calls FitRange (`plotmain.cpp:891–905`).
+  FitTime uses the full dataset's first and last epochs, independently of Quality, with no percentage margin (`plotmain.cpp:2430–2467`).
+  The single-epoch case is `[t−300 s, t]`, preserving the reference's sequential assignments (`plotmain.cpp:2452–2458`, `plotmain.h:34`).
+  FitRange uses quality-filtered ENU extrema plus a fixed 0.05 m on each side, rather than a percentage.
+  Either ground-track fit fits both axes, choosing the larger metres-per-pixel scale so all data fit with equal aspect (`plotmain.cpp:2525–2599`).
+  An explicit track fit waits for egui's axis-label layout to settle so later label measurement cannot clip the fitted data.
+  Track resizing then preserves that scale; time panels preserve their limits (`plotmain.cpp:124–131`, `appcmn/graph.cpp:97–105`).
+- Auto Fit is an OFF/ON option, default ON (`plotopt.dfm:570–582`, `plotmain.cpp:2652`).
+  A successful file load always fits time; for Gnd Trk or Position with Auto Fit ON it fits track and position ranges, otherwise it sets the default ranges (`plotdata.cpp:84–90`).
+  A plot-type change preserves time; it fits the current track/position range with Auto Fit ON, otherwise it sets that plot's default range (`plotmain.cpp:1992–2005`).
+  Center Origin sets Position to ±Y-range (default 5); Gnd Trk starts with ±Y-range on each axis and expands to equal aspect (`plotmain.cpp:2470–2493`).
+  NSat defaults are 0…30 satellites, 0…10 seconds age and 0…20 ratio (`plotmain.cpp:64–65,2495–2503,2732`).
+  Its Fit Vertical button is hidden and Center Origin is disabled, as in RTKPLOT (`plotmain.cpp:2293–2310`).
+- A compact range button beside Center Origin offers RTKPLOT's complete list: 5cm, 10cm, 20cm, 50cm, 1m, 2m, 5m, 10m, 20m, 50m, 100m, 200m, 500m, 1km, 2km, 5km, 10km, 20km, 50km, 100km, 200km, 500km and 1000km (`plotmain.dfm:1705–1742`).
+  Its popup has no scroll area and shows all items, as the reference sizes the list to its item count (`plotmain.cpp:1165–1175`).
+  Selection writes the same Y-range in metres used by Options and immediately centres the current plot, preserving shared time and ground-track equal aspect; selecting the current item centres again (`plotmain.cpp:1177–1195,2470–2493`).
+  There is no separate preset index in settings: the existing Y-range is persisted, and the button displays a custom Options value in metres without rounding to a preset.
+  The range control is disabled for NSat, matching Center Origin (`plotmain.cpp:2293–2300`).
+- Left-drag pans Gnd Trk in both axes; right-drag scales both axes about the graph centre by `2^(vertical displacement/100)`.
+  In time plots, left-drag inside a panel pans time and that component; on its left axis it pans only that component; below the bottom panel it pans only time.
+  Right-drag inside a panel or below the bottom panel scales shared time by `2^(−horizontal displacement/100)`; on a left axis it scales that component by `2^(vertical displacement/100)`.
+  Right-axis drags do nothing.
+  Gesture bounds are captured at mouse-down (`plotmain.cpp:1374–1410,1472–1546,1581–1642`; axis areas: `appcmn/graph.cpp:576–582`).
+  Displacements use egui logical pixels.
+- The wheel uses the RTKPLOT factor `2^(−WheelDelta/1200)`, i.e. `2^(−notches/10)`.
+  In time plots, a panel interior or its left/right axis scales only that component about its centre.
+  RTKPLOT scales shared time only below the bottom panel (`plotmain.cpp:1703–1736`); this frontend deliberately extends that wheel action to the time-label band below every visible panel because every panel displays its own time labels.
+  The bands span the plot's horizontal extent, between its bottom edge and the next panel or canvas bottom.
+  Hidden components do not prevent the remaining labels from zooming shared time.
+  Drag and double-click areas retain the reference mapping.
+  Gnd Trk scales both axes about the graph centre, as RTKPLOT does (`plotmain.cpp:1716–1719`, `appcmn/graph.cpp:135–139`).
+  A wheel line corresponds to one 120-unit notch; point/page events are normalized using egui's configured line-scroll speed.
+  Scale limits remain 2e−5…1e7 units per logical pixel (`appcmn/graph.cpp:11–12,135–139`).
+  Double-click centres Gnd Trk on the clicked coordinates or centres shared time on the clicked time, keeping scale (`plotmain.cpp:1435–1459`).
+- Show Grid is a Gnd Trk-only compact toolbar icon with hover text and an accessibility label.
+  It defaults ON and is persisted in Plot JSON settings; older files without the field also default ON (`BtnShowGrid`, `plotmain.cpp:921,1134–1140,2322,2370–2377`; `plotmain.dfm` around 1171).
+  It gates the entire ground-track grid, its box, labels, origin dot and the 20-pixel centre cross, including when Grid/Grid Label is OFF (`plotdraw.cpp:108–123`).
+  Ground track has no native outside axis ticks or titles: Grid/Label supplies its own inside labels, and all grid formats use the final plot transform and frame clipping, so resizing cannot restore hidden tick labels.
+  Time plots retain their existing axes and grids independently of both ground-track controls (`plotdraw.cpp:629–635,843–849`).
+- Options' Grid/Grid Label choices are OFF, Grid, Grid/Label, Circles and Circles/Label (`plotopt.dfm:765–779`, applied at `plotopt.cpp:134`).
+  The JSON option `show_g_label` defaults to 1 (Grid), matching the constructor and INI default (`plotmain.cpp:162,2655`); missing fields in older JSON retain that default and out-of-range selections are rejected.
+  With Show Grid on, OFF draws only the centre cross.
+  Grid draws rectangular lines (solid zero axes, dotted other lines), the origin dot and box, without numeric labels.
+  Grid/Label adds numeric East labels just inside the bottom edge and rotated North labels just inside the left edge (`plotdraw.cpp:119–121`, `appcmn/graph.cpp:204–265,292–304,438–465`).
+  Circles draws dotted concentric rings about coordinate (0,0), solid zero axes, the origin dot and box.
+  Circles/Label adds signed coordinate values along the zero axes: East values below y=0 and North values to the right of x=0, omitting zero.
+  These are not a separate sequence of unsigned radius captions; they share `DrawGridLabel` with the rectangular grid, using positions 7 instead of 2/4 (`plotdraw.cpp:115–117`, `appcmn/graph.cpp:228–265,530–573`).
+  Circle radii follow the x tick interval; floor/ceil boundary rings are included even when the origin is outside the viewport.
+  Label spacing doubles the tick interval below 50 pixels without changing the lines or rings (`appcmn/graph.cpp:538–572`).
+  The frontend samples clipped visible circle arcs into one-point dots; the native reference uses GDI's dotted ellipse, so exact rasterization differs.
+- Grid lines are silver: x=0 and y=0 are solid, while other lines use the reference's `psDot` pattern, represented by alternating one-point dashes and gaps (`plotdraw.cpp:108–122,629–635,843–849`; `appcmn/graph.cpp:204–223,292–302`).
+  Numeric grid ticks choose 1/2/5×powers of ten at least 30 pixels apart; calendar ticks use RTKPLOT's time-step list at least 60 pixels apart (`appcmn/graph.cpp:170–185`).
+  Ground-track numeric labels and numeric time-axis labels double the tick step when needed for 50-pixel spacing, without changing the grid (`appcmn/graph.cpp:299–302`).
+  Numeric precision and calendar tick text follow `NumText` and `TimeText` (`appcmn/graph.cpp:188–201`).
+  The existing week/TOW text option keeps its week/TOW labels.
+- The status bar has one unwrapped summary line per shown dataset, in slot order, followed by one cursor line.
+  Difference mode has one `[1-2]` summary over the unfiltered matched epochs.
+  Summaries convert stored GPST through the same display-time function as the plot before formatting timestamps or comparing calendar dates.
+  All status timestamps (summaries, inspected epochs and time-panel cursor coordinates) use that display-time axis, with no second conversion of already displayed coordinates.
+  Summaries use the selected time format/system, first/last times (the end date is omitted only on the same calendar day, to keep the line short), `N=` epochs, optional baseline and nonzero `Qn=count (pct%)` entries without quality names.
+  Quality visibility and the viewport do not affect the summaries.
+  Baseline length follows RTKPLOT exactly: the norm of each file ENU vector, or ECEF minus its own base; the minimum in km with one decimal, changing to minimum–maximum only for a spread strictly greater than 100 m (`plotinfo.cpp:208–231`).
+  An absolute dataset without a base omits B. In difference mode B still describes the original solution 1, retaining the RTKPLOT rule.
+  Long summary lines can scroll horizontally instead of wrapping or losing fields.
+- The percentage switch to the right of the status text alternates epochs-present percentages (default) and whole-data-interval percentages; counts and `N=` remain epochs present.
+  The denominator remains `floor(duration_seconds * effective_Hz + 0.5) + 1`, with percentages `quality_count / denominator * 100` (`rtktrace/src/analysis/statistics.cpp:37–65`); unknown rates and single epochs omit interval percentages.
+  The range is the whole individual dataset interval, or the matched interval for `[1-2]`, independently of the viewport and quality filter.
+  Statistics retain exact GPST integer nanoseconds separately from floating-point plot coordinates; fractional seconds retain nine digits, padding with zeroes and rounding up when digit ten is at least 5 (`rtktrace/src/analysis/gps_time.cpp:82–104`).
+- Rate estimation uses rtktrace's shortest positive adjacent interval (`rtktrace/src/analysis/sample_rate.cpp:8–29`), changing only the cutoff to ignore intervals below 1 ms (rtktrace's 5 ms gives no rate for 200 Hz data; shorter intervals are duplicate epochs); a single epoch shows `—` and no interval percentages.
+  A wrong estimate is corrected by a positive, finite manual rate saved with its file, shown as `1 Hz (manual)` instead of the estimate's `1 Hz`, with Use estimated clearing the override (`rtktrace/src/full/gui.cpp:467–472,487–502`); `[1-2]` uses Solution 1's override.
+  On reading, sorted epochs at most 1 ms apart are treated as duplicates and only the first row in the file is kept, so everything uses deduplicated data and the info window reports the removed count (`MRTKLIB src/pos/mrtk_sol.c:953–962`).
+  In `% Interval` mode each summary shows its denominator as `N=present/expected (rate)`, for example `N=3594/3595 (1.00 Hz)`; the mode button has a fixed width.
+  Estimated rates are rounded to three significant digits for both display and interval percentages (for example `1.00 Hz`, `0.0333 Hz`, `20.0 Hz`), because one 0.999 s interval in a real-time file otherwise shows `1.001001 Hz`, while fixed 0.1 Hz steps would show 30 s data as 0 Hz; manual values retain their entered precision.
+- With Show Track on, a ground-track click selects the first quality-visible epoch of the primary dataset within `MarkSize / 2 + 2` logical pixels (integer division); it consumes the pan gesture.
+  Difference ground tracks cannot be picked (`plotmain.cpp:1472–1488`, `plotcmn.cpp:396–422`).
+  When the selected epoch belongs to Data 1 and Data 2 is shown, the Data 2 epoch within 0.05 seconds (RTKPLOT's 2×DTTOL) of its time is marked too (`plotdraw.cpp:157–200,659–690`).
+  This follows RTKPLOT: `UpdateTime()` re-synchronises both `SolIndex` entries to the selected time within DTTOL (`plotmain.cpp:2068–2109`).
+  Track picking, time-cursor dragging and animation call it (`plotmain.cpp:1480,1657,1959`); scrolling updates the plot after changing the primary index (`plotmain.cpp:1352–1365`).
+  Following Data 1 time for the Data 2 mark is not a deviation.
+  Cursor text describes an epoch only within six logical pixels (a little more than the default mark radius) of its plotted point (both coordinates, including time panels), across either shown dataset, and uses its actual `[1]`, `[2]` or `[1-2]` identifier.
+  Otherwise it reports coordinates under the pointer: E/N on Gnd Trk, plus the pointer's latitude and longitude about the origin for absolute non-difference data under the same LLH/ENU rule (`plotinfo.cpp:376–393`), or time and the hovered panel's value on time plots.
+  Outside the plots the cursor line is empty.
+  Absolute Gnd Trk/Position epochs show both LLH and ENU when the measured status font width permits; otherwise the LLH/ENU button chooses one (default ENU), following RTKPLOT’s cursor-text switch (`plotmain.cpp:1299–1302`); when both fit, the button is hidden.
+  A hovered epoch decides; the decision is kept while the pointer leaves it, so the button stays reachable, and is otherwise made on the selected or first epoch after a width or sample change; the fit test measures the text column, whose width the button column does not change, so the button does not flicker at the threshold.
+  Relative ENU and difference epochs show ENU because they have no absolute LLH; difference Height mode also appends the plotted `dH`.
+  Cursor quality is `Q=n`, without a quality name.
+- Malformed-line counts, reader warnings (including geodetic-height and UTC/JST notes), per-slot file errors, settings errors and other diagnostics appear in Plot information.
+  A `⚠ count` button stays at the right of the status bar while items exist and turns red when any is an error; closing the window does not dismiss items.
+  Dataset diagnostics are replaced only with a successful replacement of that dataset or Clear.
+  Distinct failed-open errors are retained per slot until a successful open of that slot or Clear.
+  Other encountered errors remain until Clear, so that a transient error is not lost before it is read; the cost is that they accumulate until Clear.
+  The window scrolls, and every displayed item is credential-masked.
+- Show Track starts OFF (`plotmain.dfm:875–930`).
+  It gates the current-epoch marks, time cursor lines, the time scroll bar below the toolbar (RTKPLOT keeps it in the toolbar panel, `plotmain.dfm:1575–1697`), and Animate.
+  Fix controls are disabled while it is OFF; switching it OFF stops animation and clears Fix Horiz and Fix Vert, retaining Fix Center (`plotmain.cpp:939–947,1220–1230,2311–2340`).
+  Ground-track and Position statistics remain visible in either mode (`plotdraw.cpp:130–155,637–657`); full-track error circles are suppressed in Show Track, while selected-epoch error circles remain (`plotdraw.cpp:158–219,437–439`).
+  This GUI has no covariance overlay, so there are no error circles to suppress.
+  Velocity arrows and arbitrary background images are outside its supported plots.
+- Playback operates on raw, unfiltered epoch indices: Data 1, or Data 2 when it alone is selected, including Data 1 indices in difference mode.
+  Unfiltered and filtered samples share one display conversion before filtering: their times use the selected GPST/UTC axis and their third Position component uses U/Height, while raw dataset indices and GPST nanoseconds remain unchanged for selection and matching.
+  Missing Height in relative ENU data also removes its current third-panel mark and vertical following.
+  Quality changes retain the selection and do not suppress its current mark (`plotmain.cpp:1352–1365,1900–1915`; `plotdraw.cpp:158–219,659–710,861–889`).
+  Position difference shows the time cursor without a point mark; NSat difference shows neither (`plotdraw.cpp:659–710,861–889`).
+  The time scroll bar spans the selected dataset and selects an epoch directly by its thumb; arrows move one epoch and track clicks page by ten (`plotmain.cpp:2076–2090`, `plotmain.dfm:1671–1697`).
+  With Show Track on the summary lines become current-epoch lines (time, coordinates or NS/AGE/RATIO, and Q, in the cursor-text presentation): one per shown dataset, `[1]` for the selection and `[2]` for the nearest Data 2 epoch less than 0.05 s from it (the mark rule), or `[2] no epoch within 0.05 s`; in difference mode one `[1-2]` line for the matched difference.
+  The cursor line remains separate.
+  RTKPLOT shows only the selected solution (`plotinfo.cpp:18–23,88–130`); one line per dataset keeps the line count of the summaries, so the layout does not move when Show Track is toggled, and Data 2 can be read during playback.
+  RTKPLOT re-synchronises the Data 2 index by stepping from its previous position (`plotmain.cpp:2092–2109`), which for data faster than 20 Hz can stop at an epoch that is not the nearest; this GUI takes the nearest one.
+  With Show Track off the whole-data summaries and percentages remain available.
+- Animate starts and stops at the current selection, without rewinding, advances `AnimCycle` epochs per timer tick, clamps to the last epoch and stops there.
+  A nonpositive step acts as one (`plotmain.cpp:986–998,1279–1284,1900–1915`).
+  Options stores an integer animation step (default 10 epochs) and unsigned refresh cycle (default 100 ms).
+  Both fields are backward-compatible JSON options (`plotopt.cpp:88–89,176–177`, `plotopt.dfm:906–923,1018–1025`, `plotmain.cpp:2666–2667,2829–2830`).
+  This GUI chooses to advance at most one step per due repaint frame, without catch-up bursts or worker threads, request the next repaint after the refresh interval, and stop ticks when the refresh cycle is zero.
+  These are GUI timing rules, chosen to keep input responsive; they are not a claim about RTKPLOT's native timer behaviour.
+- Fix Center is visible only on Gnd Trk and defaults ON; it centres both axes on the current primary position, or the matched difference (`plotmain.dfm:1049–1059`, `plotdraw.cpp:86–100`).
+  Fix Horiz is visible on Position and NSat and defaults OFF; Fix Vert is visible only on Position and initially ON (`plotmain.cpp:2312–2324`, `plotmain.dfm:678–688,933–944`).
+  In difference mode Position follows the displayed difference of the current epoch.
+  RTKPLOT follows solution 1 there (`SolToPos(SolData+sel, ...)`, `plotdraw.cpp:609–620`), which for moving data centres the panels far from the difference series, so this is a deliberate deviation; without a matched difference epoch nothing is followed.
+  Height follows the displayed component.
+  NSat follows time only (`plotdraw.cpp:825–835`).
+  Fix Horiz resets the cursor to the horizontal centre when toggled; a primary drag within a time panel then moves its fixed horizontal fraction, limited to the plot edges, instead of panning time (`plotmain.cpp:961–965,1232–1240,1606–1623`).
+  Fix Center/Horiz/Vert affect navigation only while Show Track is on and the corresponding control is enabled for the current plot and selected data.
+  Fix Vert prevents vertical panning when enabled (`plotmain.cpp:1612–1614,1627–1629`); scaling and wheel zoom remain available.
+  Ground-track dragging still runs with Fix Center, but the draw pass recentres it; the reference track pan guard checks Fix Horiz (`plotmain.cpp:1587–1593,1625–1642,1703–1736`).
+  FitRange, including Auto Fit on file load or plot-type change, releases Fix Horiz (`plotmain.cpp:1992–2005,2535–2536`).
+  Fix Horiz blocks double-click centring (`plotmain.cpp:1443–1459`).
+- On time plots a primary drag starting within five pixels of the time cursor line, in any panel, chooses the first raw epoch at or after the pointer time, clamping to either end.
+  RTKPLOT instead draws a small handle at the top of the first panel and drags only from it; the lone circle was hard to recognise as part of the line, so this GUI draws no handle.
+  Fix Horiz disables this drag (`plotmain.cpp:1509–1523,1644–1660`, `plotdraw.cpp:699–706,878–885`).
+  Arrow keys pan, Shift reduces the pan from ten to one logical pixel, and Ctrl+arrows scale by 1.05; they do not step epochs.
+  Fixed axes constrain panning according to the literal checks, including the reference's first-component-only vertical key guard before the draw pass recentres Position (`plotmain.cpp:1760–1815`).
+- The compact toolbar has menus and file paths on the first row and plotting controls on the second.
+  Combos and buttons use their content width; all controls fit the default 1000-pixel window.
+  Dataset buttons are `1`, `2`, `1-2`.
+  Show Track, Fix Center/Horiz/Vert, Animate, Fit Horizontal, Fit Vertical and Center Origin are drawn from egui shapes, with their full hover text and accessibility labels.
+  File paths share the remaining first-row width: directories receive a middle `...` by measured text width, retaining the full filename and the full masked path on hover.
+  A filename wider than its entire allocation scrolls horizontally rather than being shortened.
+- Position’s U/Height switch has a fixed control width to keep the toolbar and panels in place and is explicitly rtktrace-derived: U is ENU about the selected origin, while Height is the epoch's absolute ellipsoidal height in metres (`rtktrace/src/full/gui.cpp:843–851`, `rtktrace/src/plot/axis.cpp:44–55`, `rtktrace/src/plot/batch.cpp:25–36`).
+  Difference Height is the subtraction of the matched ellipsoidal heights (`rtktrace/src/plot/data_view.cpp:29–48`, `rtktrace/src/analysis/relative.cpp:24–25`).
+  Switching fits only the third component, whose values change, and preserves shared time and East/North limits.
+  Relative ENU files have no absolute height: their third series is absent in Height mode and the persistent info indicator explains why.
+  Statistics of the third Position panel use the displayed U or Height values.
+- Options offers `www/ssss`, `h:m:s GPST` or `h:m:s UTC` time (axes and texts; UTC uses the leap-second table).
+  RTKPLOT's `h:m:s LT` is not offered: RTKPLOT uses a fixed UTC+9 on its axes but the computer's time zone in its texts (`plotcmn.cpp:59–64`); other time systems are a later decision.
+  Options also offers degrees or DMS coordinate text, Show Statistics (off by default), Mark/Line, Mark or Line style, mark sizes 1/2/3/4/5/10/15/20, origin fields, Auto Fit (ON by default), Center Origin Y-range and the five ground-track grid formats.
+  The dialog edits a draft; OK validates and applies it, Cancel discards it.
+  Combo lists show all choices.
+  One page contains three label/field columns followed by a Map section, without tabs.
+  For this dialog, all sizes and positions come from measured text, shared style values (interaction size, spacing, padding and font height), or the parent layout; no dialog widths, heights or positions are hard-coded.
+  Three egui Grids sit side by side with the shared style's spacing.
+  Before laying out any Grid, the current pass measures every label, every combo choice, and each numeric field's formatted text and suffix with their current fonts, adding style-derived padding, icon spacing and interaction minimums.
+  All three Grids share the resulting uniform label-cell width and uniform field-cell width.
+  Each label/field pair occupies one explicitly sized Grid cell, with the Grid's minimum column width set to that measured row width, so egui's cached column advances cannot position fields over labels.
+  Measurements are recomputed directly on every pass, without cached widths or a measurement/discard cycle; opening the dialog and changing text size therefore use the current geometry on their first frame.
+  The layout grows with font size and label/choice text rather than enforcing a pixel-width limit.
+  Each Map input occupies the full measured width of the three-column block, with its label above it.
+  The column assignment, row order and rough proportions follow `plotopt.dfm` (label/field Left 12/102, 193/283, 373/467); those pixel coordinates are reference information only and are never literal layout dimensions.
+  Omitted options leave no placeholder rows.
+  The mapping below numbers the compacted rows within each column.
+  The Lat/Lon/Hgt label sits below Coordinate Origin in the middle Grid's full-width label cell.
+  Its three fields share that same row, starting at the middle field cell and spanning the remaining middle and right columns to the right Grid's right edge, using the measured positions of the laid-out columns (`plotopt.dfm:211–217,948–970`).
+  Their units appear on hover.
+  The reference's position-picker `...` button is omitted because it is not implemented (`plotopt.dfm:972–985`).
 
   | Column | Rows in order | RTKPLOT source |
   | --- | --- | --- |
@@ -179,92 +544,237 @@ The plot follows RTKPLOT except for the explicitly specified improvements below.
   | Middle | 1 Grid/Grid Label; 2 Auto Fit; 3 Y-Range; 4 Coordinate Origin; 5 Lat/Lon/Hgt | `plotopt.dfm:85–91,106–112,155–161,197–217,418–440,570–582,765–779,948–970` |
   | Right | 1 Plot Style; 2 Mark Size; 3 Grid label size; 4 Statistics size; 5 Animation step; 6 Update cycle (ms) | `plotopt.dfm:43–49,92–98,183–189,239–245,367–389,403–416,644–657,687–704,906–920,1018–1025` |
 
-  Unsupported RTKPLOT controls are omitted: satellite systems and exclusions, receiver position, cycle slip, parity unknown, ephemeris, elevation mask/pattern, hide low satellite, maximum NSAT/DOP and multipath, error bar/circle, direction arrow, graph label, scale, compass, colours, font name/style, RT buffer size, time sync port, RINEX options, shape file and TLE data/satellite numbers (`plotopt.dfm:36–387,825–889,1221–1230`). RTKPLOT uses one font for all plot text (`plotopt.cpp:68–71,156–158`, `plotmain.cpp:2066,2744–2748`). At hal1278's request this GUI instead offers two independent numeric sizes, without a font name selector: Grid label size for ground-track labels (proportional, default 9 pt, matching the previous Small style) and Statistics size for ground-track/Position overlays (monospace, default 12 pt). Their rows replace the reference Font row below Mark Size (`plotopt.dfm:367–389,644–657`), in that order. Both allow 6–30 pt inclusive; nonfinite and out-of-range values are rejected. They persist as `grid_label_size` and `statistics_size` in JSON, and older files get the defaults. Time-plot axis labels and other text keep their existing fonts. The percentage basis remains in the status bar, so it adds no Options row. Animation step retains epochs-per-tick semantics and Update cycle retains the zero-disables rule, explained on hover. Map Tile URL and attribution occupy full-width rows below the columns because RTKPLOT keeps tile settings in a separate Map View Options dialog (`mapviewopt.dfm:25–46,83–165`), while this GUI keeps one Options page. The existing URL validation, draft/cancel behavior and settings error handling apply to all these fields.
-- Position and ground-track statistics use all filtered samples, independently of the viewport: AVE, sample STD (n−1, zero for a singleton), and RMS about zero. With Height selected, the absolute ellipsoidal height has no zero reference, so its panel omits RMS (it would only repeat AVE); the difference dH keeps it. Ground-track `Horiz RMS` is `sqrt(mean(E²+N²))`, the RMS of the horizontal distance about the origin. RTKPLOT shows twice this value as `2D` (`plotdraw.cpp:491–501`); both `2D RMS` and `2DRMS` are used for either value, and `DRMS` implies errors from a known true position, so the plain value gets a descriptive name. NSat has no statistics overlay, as in RTKPLOT. Solution-1 and difference marks use the shared navi status palette; Q=0 is silver and Q=7 is gray. Solution-2 uses RTKPLOT’s second palette, converted from BGR `TColor` literals to RGB: Q=1…6 are `#004080`, `#808000`, `#8000FF`, `#0080FF`, `#FF8080`, `#8080FF`, with the same silver/gray endpoints (`plotmain.cpp:2684–2699`). Connecting lines are silver: solid for solution 1/difference and dotted for solution 2. The dotted pattern is one logical point on/one off, matching the existing reference grid style (`plotdraw.cpp:430–451,719–766`, `appcmn/graph.cpp:622–623`). Statistics are calculated separately per displayed series.
-- GUI settings (both last files, per-file manual rates, plot, components, quality mask, percentage basis, U/Height, cursor LLH/ENU and options) live in `<settings directory>/<executable file stem>.json`, using the shared directory resolver. Both last successfully opened files are reopened at launch. The optional `last_file2` field defaults to absent for older settings files. Old `quality` values migrate to the equivalent visibility mask; new controls default to epochs-present percentages, U and ENU. Invalid legacy quality values are reported. The migration only serves settings written before the quality buttons and can be removed later. Data-button state starts with Data 1 selected; reopening inputs selects each successfully loaded dataset, as a normal open does. An unreadable/invalid settings file is reported, defaults are used visibly, and that file is not overwritten during the session. Save failures are displayed without trying another directory.
-- `mrtklib-egui-plotkit` owns the solution point type, WGS84/ENU display conversions, status labels/colours and statistics. Navi uses its status table without changing its labels or colours. The text reader stays in the plot crate; navi receives solutions through RPC. `mrtklib-egui-common` owns the shared native-dialog worker and diagnostic logger, while conv retains its input/output path hints. Credential-bearing text is masked before display or logging.
-- Map tiles form the background of Gnd Trk, below the grid, trajectories, marks and Show Track overlays. RTKPLOT uses a separate Leaflet Map View (`mapview.cpp`, `mapviewopt.cpp`, settings in `plotmain.cpp:2752–2758`). A browser cannot be embedded in egui; drawing textured tile meshes as custom `egui_plot::PlotItem`s in the existing graph deliberately keeps its axes, zoom and playback together. No separate map widget is used.
-- Map starts OFF and is persisted in Plot's JSON settings. Its toolbar toggle appears only for Gnd Trk. An empty tile URL disables it with a hint to Options. Otherwise it requires exactly the same absolute, non-difference selection and valid origin as the off-point latitude/longitude status text: every shown dataset must be absolute, and the selected origin must be available. A temporarily unavailable map retains the toggle preference. Options stores one Web Mercator XYZ tile URL template containing `{z}`, `{x}`, `{y}` and one attribution text. Both default to empty, including when older settings omit them. The user supplies a server and must follow its terms of use, including attribution. The URL is shown as ordinary editable text in Options; diagnostics use the shared credential mask, and attribution appears in the lower-right graph corner while Map is enabled and available.
-- Tile zoom matches a 256-pixel tile's ground resolution at the origin latitude to the current metres per physical screen pixel, rounded to the nearest zoom and clamped to 0…18. The cap avoids excessive detail and request churn at GNSS-scale zoom levels. Latitude is clamped to Web Mercator's ±85.05112878° limit. Each tile is drawn as a textured mesh of 4×4 quads (two triangles each). All 25 vertices are converted from their Mercator tile coordinates through the existing WGS84 ECEF/ENU display conversions at the origin height; texture UVs stay linear in Mercator tile pixel space. This follows meridian convergence and approximates curved edges with matching subdivisions. Adjacent tiles use identical coordinates for every shared edge vertex, including a canonical longitude at the dateline, so their edges meet without gaps or overlaps. ENU positions remain double precision until the custom plot item applies the final plot transform and emits an `egui::Shape::Mesh` with the cached texture ID, below the grid and tracks. Placement always uses the origin's fixed position, including Linear Fit Pos. Visible ENU corners and edge centres determine candidate XYZ ranges, unwrapped across the dateline, with a one-tile candidate margin; only tiles whose mesh bounds (all 25 vertices, since curved edges can bulge beyond the corners) intersect the viewport are requested. If the visible tile set exceeds 256 textures, zoom is reduced until the complete set fits the cache. Obsolete in-flight arrivals are discarded, and eviction preserves the current visible set, so a stationary view finishes fetching without repeatedly evicting and requesting visible tiles. Excessive candidate extents report a diagnostic asking the user to zoom in.
-- The tile layer uses `ureq` on at most two worker threads at once, with channels, a 10-second request timeout and a `mrtklib-egui/<version>` User-Agent. Workers decode PNG through `image`, then request repaint; the UI uploads textures. Only PNG support is enabled. Responses are limited to 4 MiB and decoded images to 1024×1024 and a 16 MiB allocation limit. The cache is memory-only, retains up to 256 textures with least-recently-used eviction, and never writes tiles to disk. Requests start only while an available map is shown. Failed tile IDs are retained for the current URL and are not retried on repaint or navigation. Changing the URL, Reload or Clear resets the cache and permits retry; old in-flight requests remain counted against the concurrency limit and their results are discarded. HTTP client errors are mapped to credential-free messages using fixed categories, HTTP status codes or I/O error kinds; URLs, header values and arbitrary error payloads are never formatted. Distinct fetch/decode errors appear once in Plot information, without one entry per tile, and remain until Clear like other diagnostics. Default tests use only explicitly started localhost servers.
-- Tile HTTPS uses `rustls` with the `ring` provider and `rustls-native-certs` to load the operating system's roots; certificate verification remains enabled. `ureq` defaults, bundled certificate roots, compression and extra image formats are disabled. `image` was already a PNG-only test dependency and is now also a runtime dependency. All new crates are permissively licensed (checked with Cargo metadata).
+  Unsupported RTKPLOT controls are omitted: satellite systems and exclusions, receiver position, cycle slip, parity unknown, ephemeris, elevation mask/pattern, hide low satellite, maximum NSAT/DOP and multipath, error bar/circle, direction arrow, graph label, scale, compass, colours, font name/style, RT buffer size, time sync port, RINEX options, shape file and TLE data/satellite numbers (`plotopt.dfm:36–387,825–889,1221–1230`).
+  RTKPLOT uses one font for all plot text (`plotopt.cpp:68–71,156–158`, `plotmain.cpp:2066,2744–2748`).
+  At hal1278's request this GUI instead offers two independent numeric sizes, without a font name selector: Grid label size for ground-track labels (proportional, default 9 pt, matching the previous Small style) and Statistics size for ground-track/Position overlays (monospace, default 12 pt).
+  Their rows replace the reference Font row below Mark Size (`plotopt.dfm:367–389,644–657`), in that order.
+  Both allow 6–30 pt inclusive; nonfinite and out-of-range values are rejected.
+  They persist as `grid_label_size` and `statistics_size` in JSON, and older files get the defaults.
+  Time-plot axis labels and other text keep their existing fonts.
+  The percentage basis remains in the status bar, so it adds no Options row.
+  Animation step retains epochs-per-tick semantics and Update cycle retains the zero-disables rule, explained on hover.
+  Map Tile URL and attribution occupy full-width rows below the columns because RTKPLOT keeps tile settings in a separate Map View Options dialog (`mapviewopt.dfm:25–46,83–165`), while this GUI keeps one Options page.
+  The existing URL validation, draft/cancel behavior and settings error handling apply to all these fields.
+- Position and ground-track statistics use all filtered samples, independently of the viewport: AVE, sample STD (n−1, zero for a singleton), and RMS about zero.
+  With Height selected, the absolute ellipsoidal height has no zero reference, so its panel omits RMS (it would only repeat AVE); the difference dH keeps it.
+  Ground-track `Horiz RMS` is `sqrt(mean(E²+N²))`, the RMS of the horizontal distance about the origin.
+  RTKPLOT shows twice this value as `2D` (`plotdraw.cpp:491–501`); both `2D RMS` and `2DRMS` are used for either value, and `DRMS` implies errors from a known true position, so the plain value gets a descriptive name.
+  NSat has no statistics overlay, as in RTKPLOT.
+  Solution-1 and difference marks use the shared navi status palette; Q=0 is silver and Q=7 is gray.
+  Solution-2 uses RTKPLOT’s second palette, converted from BGR `TColor` literals to RGB: Q=1…6 are `#004080`, `#808000`, `#8000FF`, `#0080FF`, `#FF8080`, `#8080FF`, with the same silver/gray endpoints (`plotmain.cpp:2684–2699`).
+  Connecting lines are silver: solid for solution 1/difference and dotted for solution 2.
+  The dotted pattern is one logical point on/one off, matching the existing reference grid style (`plotdraw.cpp:430–451,719–766`, `appcmn/graph.cpp:622–623`).
+  Statistics are calculated separately per displayed series.
+- GUI settings (both last files, per-file manual rates, plot, components, quality mask, percentage basis, U/Height, cursor LLH/ENU and options) live in `<settings directory>/<executable file stem>.json`, using the shared directory resolver.
+  Both last successfully opened files are reopened at launch.
+  The optional `last_file2` field defaults to absent for older settings files.
+  Old `quality` values migrate to the equivalent visibility mask; new controls default to epochs-present percentages, U and ENU.
+  Invalid legacy quality values are reported.
+  The migration only serves settings written before the quality buttons and can be removed later.
+  Data-button state starts with Data 1 selected; reopening inputs selects each successfully loaded dataset, as a normal open does.
+  An unreadable/invalid settings file is reported, defaults are used visibly, and that file is not overwritten during the session.
+  Save failures are displayed without trying another directory.
+- `mrtklib-egui-plotkit` owns the solution point type, WGS84/ENU display conversions, status labels/colours and statistics.
+  Navi uses its status table without changing its labels or colours.
+  The text reader stays in the plot crate; navi receives solutions through RPC.
+  `mrtklib-egui-common` owns the shared native-dialog worker and diagnostic logger, while conv retains its input/output path hints.
+  Credential-bearing text is masked before display or logging.
+- Map tiles form the background of Gnd Trk, below the grid, trajectories, marks and Show Track overlays.
+  RTKPLOT uses a separate Leaflet Map View (`mapview.cpp`, `mapviewopt.cpp`, settings in `plotmain.cpp:2752–2758`).
+  A browser cannot be embedded in egui; drawing textured tile meshes as custom `egui_plot::PlotItem`s in the existing graph deliberately keeps its axes, zoom and playback together.
+  No separate map widget is used.
+- Map starts OFF and is persisted in Plot's JSON settings.
+  Its toolbar toggle appears only for Gnd Trk.
+  An empty tile URL disables it with a hint to Options.
+  Otherwise it requires exactly the same absolute, non-difference selection and valid origin as the off-point latitude/longitude status text: every shown dataset must be absolute, and the selected origin must be available.
+  A temporarily unavailable map retains the toggle preference.
+  Options stores one Web Mercator XYZ tile URL template containing `{z}`, `{x}`, `{y}` and one attribution text.
+  Both default to empty, including when older settings omit them.
+  The user supplies a server and must follow its terms of use, including attribution.
+  The URL is shown as ordinary editable text in Options; diagnostics use the shared credential mask, and attribution appears in the lower-right graph corner while Map is enabled and available.
+- Tile zoom matches a 256-pixel tile's ground resolution at the origin latitude to the current metres per physical screen pixel, rounded to the nearest zoom and clamped to 0…18.
+  The cap avoids excessive detail and request churn at GNSS-scale zoom levels.
+  Latitude is clamped to Web Mercator's ±85.05112878° limit.
+  Each tile is drawn as a textured mesh of 4×4 quads (two triangles each).
+  All 25 vertices are converted from their Mercator tile coordinates through the existing WGS84 ECEF/ENU display conversions at the origin height; texture UVs stay linear in Mercator tile pixel space.
+  This follows meridian convergence and approximates curved edges with matching subdivisions.
+  Adjacent tiles use identical coordinates for every shared edge vertex, including a canonical longitude at the dateline, so their edges meet without gaps or overlaps.
+  ENU positions remain double precision until the custom plot item applies the final plot transform and emits an `egui::Shape::Mesh` with the cached texture ID, below the grid and tracks.
+  Placement always uses the origin's fixed position, including Linear Fit Pos.
+  Visible ENU corners and edge centres determine candidate XYZ ranges, unwrapped across the dateline, with a one-tile candidate margin; only tiles whose mesh bounds (all 25 vertices, since curved edges can bulge beyond the corners) intersect the viewport are requested.
+  If the visible tile set exceeds 256 textures, zoom is reduced until the complete set fits the cache.
+  Obsolete in-flight arrivals are discarded, and eviction preserves the current visible set, so a stationary view finishes fetching without repeatedly evicting and requesting visible tiles.
+  Excessive candidate extents report a diagnostic asking the user to zoom in.
+- The tile layer uses `ureq` on at most two worker threads at once, with channels, a 10-second request timeout and a `mrtklib-egui/<version>` User-Agent.
+  Workers decode PNG through `image`, then request repaint; the UI uploads textures.
+  Only PNG support is enabled.
+  Responses are limited to 4 MiB and decoded images to 1024×1024 and a 16 MiB allocation limit.
+  The cache is memory-only, retains up to 256 textures with least-recently-used eviction, and never writes tiles to disk.
+  Requests start only while an available map is shown.
+  Failed tile IDs are retained for the current URL and are not retried on repaint or navigation.
+  Changing the URL, Reload or Clear resets the cache and permits retry; old in-flight requests remain counted against the concurrency limit and their results are discarded.
+  HTTP client errors are mapped to credential-free messages using fixed categories, HTTP status codes or I/O error kinds; URLs, header values and arbitrary error payloads are never formatted.
+  Distinct fetch/decode errors appear once in Plot information, without one entry per tile, and remain until Clear like other diagnostics.
+  Default tests use only explicitly started localhost servers.
+- Tile HTTPS uses `rustls` with the `ring` provider and `rustls-native-certs` to load the operating system's roots; certificate verification remains enabled.
+  `ureq` defaults, bundled certificate roots, compression and extra image formats are disabled.
+  `image` was already a PNG-only test dependency and is now also a runtime dependency.
+  All new crates are permissively licensed (checked with Cargo metadata).
 - Velocity/acceleration plots, `.stat`, observation plots, waypoints, arbitrary background images, export and live streams are outside this slice.
 
 ## Mock server
 
-- `mrtklib-egui-mock` imitates the `mrtk run` RPC endpoint (protocol 0.1). GUI code and its tests use it for situations that the real server rarely produces (a failed start, lost events, protocol errors).
+- `mrtklib-egui-mock` imitates the `mrtk run` RPC endpoint (protocol 0.1).
+  GUI code and its tests use it for situations that the real server rarely produces (a failed start, lost events, protocol errors).
   Rationale: GUI tests then run with `cargo test` alone, without MRTKLIB or another runtime.
 - It is a library, which tests start in-process, and an executable with the RPC options, the token variable and the ready line of `mrtk run`.
-- Its tests validate every message it sends against a pinned copy of MRTKLIB `docs/rpc/openrpc.json` (`crates/mrtklib-egui-mock/contract/`). Opt-in real-server tests also exercise the controller with the Linux backend; the default suite needs no MRTKLIB installation.
+- Its tests validate every message it sends against a pinned copy of MRTKLIB `docs/rpc/openrpc.json` (`crates/mrtklib-egui-mock/contract/`).
+  Opt-in real-server tests also exercise the controller with the Linux backend; the default suite needs no MRTKLIB installation.
   Rationale: a generic OpenRPC mock follows the schema but has no state (start, then running, then solution events; `busy` during a transition; sequence numbers).
-- Positioning is simulated: a rover circling near a fixed base, going from single to float to fix, with a missing solution every 40 epochs. The values are test data, not positioning; the coordinate conversions that make them consistent stay in the mock and are not reused for display in the GUI crates.
+- Positioning is simulated: a rover circling near a fixed base, going from single to float to fix, with a missing solution every 40 epochs.
+  The values are test data, not positioning; the coordinate conversions that make them consistent stay in the mock and are not reused for display in the GUI crates.
 - The mock is used by tests and during development only; the applications do not depend on it.
 - Dependencies: `tungstenite` (a WebSocket implementation with a blocking API, so the mock needs no async runtime) and, for the tests only, `jsonschema` with its default features off (no fetching of external `$ref` targets over HTTP).
-- Differences from `mrtk run` in the executable: optional leading `run` and `--no-console` are accepted (`--no-console` has no effect: there is no console), and `--config <file>` is accepted but ignored (no configuration is read). It does not generate a token when none is given, remove the token variable from its environment, or print the `--rpc-no-auth` warning. `--exit-on-stdin-eof` requires `--no-console` and requests the same normal shutdown as RPC on EOF or a read error. Its behavior options (start failure, simulated existing outputs through repeatable `--existing-output PATH`, input end, timing) are fixed for the whole process. Existing outputs are simulated strings, without filesystem access or filename expansion. `overwrite` uses exact comparison and rejects NUL strings; refusals list distinct paths in configured order. Unknown parameters and event limits below 1 are `invalidParams`; larger limits are cut to the server maximum (1000 by default).
+- Differences from `mrtk run` in the executable: optional leading `run` and `--no-console` are accepted (`--no-console` has no effect: there is no console), and `--config <file>` is accepted but ignored (no configuration is read).
+  It does not generate a token when none is given, remove the token variable from its environment, or print the `--rpc-no-auth` warning.
+  `--exit-on-stdin-eof` requires `--no-console` and requests the same normal shutdown as RPC on EOF or a read error.
+  Its behavior options (start failure, simulated existing outputs through repeatable `--existing-output PATH`, input end, timing) are fixed for the whole process.
+  Existing outputs are simulated strings, without filesystem access or filename expansion.
+  `overwrite` uses exact comparison and rejects NUL strings; refusals list distinct paths in configured order.
+  Unknown parameters and event limits below 1 are `invalidParams`; larger limits are cut to the server maximum (1000 by default).
 
 ## RPC client
 
-- `mrtklib-egui-rpc` is the client of the protocol 0.1 RPC, used by the GUI applications and tested against the mock server. It depends on no GUI toolkit and starts no process (that is the process supervisor's job).
-- `Client` is one blocking connection that sends one request at a time and returns typed results. A JSON-RPC error carries `reason` and `state`; callers branch on `reason`, never on `message`. `Session` runs a `Client` on a worker thread and keeps a model that the UI reads, as a copy, on every frame; the application passes a callback (a repaint request) that tells it when the model changed.
-  Rationale: blocking `tungstenite` on a thread needs no async runtime, as in the mock, and keeps macOS possible. A model behind a mutex has no queue that could grow without bound when the UI is slow.
-- `Client::start` and `restart` accept overwrite paths; empty lists omit the member, using the contract default. `LastError.paths` defaults to empty when absent. `Session::request_start` queues consents while keeping the comparable `Command` enum; request outcomes retain the accepted sequence boundary and the Start outcome (`pending`, the first terminal lifecycle, or `unknown` after synchronization before settlement). The worker records settlement while applying every event in order, before publishing the model; reading only the latest lifecycle cannot attribute a result to a request. Restart retains its acceptance result without Start outcome tracking because it includes an intermediate stopped event.
-- The session pulls: `sync` once, then `getEvents` every poll interval, and again at once while more events are ready. When events are lost it calls `sync` again; the lifecycle is recovered, the missing solutions and log messages are not. The model follows events in publish order and keeps the latest solution (including `none`), the last valid (non-`none`) solution per event and the mode until the next run starts; the UI decides how to show them outside `running`. A `sync` replaces the last valid solution with the snapshot's non-`none` solution or `None`, since earlier missing solutions are not recovered. Keeping the last valid solution is this client's choice for an RTKNAVI-like display; the protocol does not ask clients for it (a `none` solution carries only its time and status). After a `running` event it asks `getStatus` and takes only the mode from the response, and discards a response older than the last status event.
+- `mrtklib-egui-rpc` is the client of the protocol 0.1 RPC, used by the GUI applications and tested against the mock server.
+  It depends on no GUI toolkit and starts no process (that is the process supervisor's job).
+- `Client` is one blocking connection that sends one request at a time and returns typed results.
+  A JSON-RPC error carries `reason` and `state`; callers branch on `reason`, never on `message`.
+  `Session` runs a `Client` on a worker thread and keeps a model that the UI reads, as a copy, on every frame; the application passes a callback (a repaint request) that tells it when the model changed.
+  Rationale: blocking `tungstenite` on a thread needs no async runtime, as in the mock, and keeps macOS possible.
+  A model behind a mutex has no queue that could grow without bound when the UI is slow.
+- `Client::start` and `restart` accept overwrite paths; empty lists omit the member, using the contract default.
+  `LastError.paths` defaults to empty when absent.
+  `Session::request_start` queues consents while keeping the comparable `Command` enum; request outcomes retain the accepted sequence boundary and the Start outcome (`pending`, the first terminal lifecycle, or `unknown` after synchronization before settlement).
+  The worker records settlement while applying every event in order, before publishing the model; reading only the latest lifecycle cannot attribute a result to a request.
+  Restart retains its acceptance result without Start outcome tracking because it includes an intermediate stopped event.
+- The session pulls: `sync` once, then `getEvents` every poll interval, and again at once while more events are ready.
+  When events are lost it calls `sync` again; the lifecycle is recovered, the missing solutions and log messages are not.
+  The model follows events in publish order and keeps the latest solution (including `none`), the last valid (non-`none`) solution per event and the mode until the next run starts; the UI decides how to show them outside `running`.
+  A `sync` replaces the last valid solution with the snapshot's non-`none` solution or `None`, since earlier missing solutions are not recovered.
+  Keeping the last valid solution is this client's choice for an RTKNAVI-like display; the protocol does not ask clients for it (a `none` solution carries only its time and status).
+  After a `running` event it asks `getStatus` and takes only the mode from the response, and discards a response older than the last status event.
   Rationale: this is the polling that the protocol is designed for (`docs/rpc/` §7), and the model never shows a state that later events undo.
 - While the protocol is 0.x the client accepts only version 0.1 exactly; from 1.0 it checks the major version.
   Rationale: any 0.x change may be incompatible (`docs/rpc/` §4), so a client built for 0.1 cannot know that a later 0.x is safe.
-- Poll interval 100 ms (the protocol's example; a client polling every 0.1 to 1 s loses no events in normal operation). Timeout 5 s for connecting and for each request, from sending it to receiving its response: lifecycle requests are answered when they take effect, not when the transition ends, so a healthy server answers quickly; 5 s leaves room for a loaded machine and still reports a hung server; measured Linux replay requests take 0.1–1.9 ms, so the timeout retains ample margin. Provisional: 1000 log messages kept, so that memory stays bounded when level-2 messages flood; set when the log panel is designed.
-- There is no automatic reconnection in the first implementation. When the connection ends, the model says why; a server that closes with status 1001 ("going away") is shown as exited, not as an error. A new connection starts with `sync`.
-- The token is used for the handshake only. It is not kept and never appears in `Debug`, `Display` or an error. `tungstenite` logs the whole handshake request, token included, at the `log` trace level (`log` is a required dependency of `tungstenite`), so a logger added to the applications must keep `tungstenite` below trace.
+- Poll interval 100 ms (the protocol's example; a client polling every 0.1 to 1 s loses no events in normal operation).
+  Timeout 5 s for connecting and for each request, from sending it to receiving its response: lifecycle requests are answered when they take effect, not when the transition ends, so a healthy server answers quickly; 5 s leaves room for a loaded machine and still reports a hung server; measured Linux replay requests take 0.1–1.9 ms, so the timeout retains ample margin.
+  Provisional: 1000 log messages kept, so that memory stays bounded when level-2 messages flood; set when the log panel is designed.
+- There is no automatic reconnection in the first implementation.
+  When the connection ends, the model says why; a server that closes with status 1001 ("going away") is shown as exited, not as an error.
+  A new connection starts with `sync`.
+- The token is used for the handshake only.
+  It is not kept and never appears in `Debug`, `Display` or an error.
+  `tungstenite` logs the whole handshake request, token included, at the `log` trace level (`log` is a required dependency of `tungstenite`), so a logger added to the applications must keep `tungstenite` below trace.
 
 ## Process supervisor
 
 `mrtklib-egui-supervisor` is a library without a GUI dependency that handles child processes.
 
-- It starts, stops and kills child processes, collects exit status, and reads their output. UI code (windows, panels, widgets) never starts a process.
-- The command preview and the executed argv are built from the same value. Display text is never executed.
-- `CommandLine` holds the program, argv and optional working directory; execution applies that directory with `Command::current_dir`. With a directory, the preview is `Working directory: "…" | Program: …`; without one, it is the argv alone. This is a labelled display, not a shell command. Its preview quotes ambiguous words for display, not shell execution, and its debug output contains only that masked preview. Secret environment variables are supplied separately and their values added to the masking list. Tokens are 32 OS-random bytes encoded as unpadded base64url; failure of the OS random source stops token generation.
-- `Options.readiness` selects `ReadyLine` (the default for navi) or `None` for finite jobs. `None` starts at `Readiness::NotRequired`, treats all output as display text, and enforces neither the ready timeout nor an exit-before-ready failure; `wait_ready` returns an explicit no-readiness error. Spawn/read/monitor failures remain errors.
-- Each piped output has a blocking std reader thread; this works with Linux, Windows pipes and macOS without an async runtime. Stdin defaults to null; a held-open pipe option lets the supervisor retain the write end separately from the child lock and never write to it. Navi uses that pipe with `--exit-on-stdin-eof`.
-- An `Arc<Mutex<...>>` holds a bounded snapshot, copied by the UI; a notify callback runs after updates, outside the lock, as in the RPC session. UI scheduling never holds up pipe reads; the callback promptly requests a repaint.
-- A monitor polls `try_wait` every 100 ms (provisional: exit is shown within 0.1 s). The child lock covers only `try_wait` or `kill`, so a blocking wait cannot delay a kill.
-- `stop` first closes the held stdin pipe without waiting behind the child lock, waits during the grace period, then kills and reaps. Drop also closes that pipe before killing and reaping a running child. Both await readers for at most the remaining drain timeout, detach them and join only the monitor on drop; detached readers keep updating the shared state until the pipes close.
-- The drain timeout is 1 s after reaping: the exited child's output is already in the pipe and is read within milliseconds. The bound matters when a descendant holds a pipe open and keeps GUI shutdown responsive. Expiry records an error that output is no longer awaited; exit waits finish after draining or expiry. The monitor and shutdown calls share one deadline, so repeated waits do not extend it.
-- If the GUI itself crashes or is killed, the OS closes the held stdin pipe, allowing `mrtk --exit-on-stdin-eof` to shut down normally. This crate cannot enforce termination of a hung child after the GUI dies: std provides no portable parent-death signal. A Windows job object is a later platform task. Descendants (programs that `mrtk` started) are not killed by this crate; `mrtk`'s own shutdown is responsible for them.
+- It starts, stops and kills child processes, collects exit status, and reads their output.
+  UI code (windows, panels, widgets) never starts a process.
+- The command preview and the executed argv are built from the same value.
+  Display text is never executed.
+- `CommandLine` holds the program, argv and optional working directory; execution applies that directory with `Command::current_dir`.
+  With a directory, the preview is `Working directory: "…" | Program: …`; without one, it is the argv alone.
+  This is a labelled display, not a shell command.
+  Its preview quotes ambiguous words for display, not shell execution, and its debug output contains only that masked preview.
+  Secret environment variables are supplied separately and their values added to the masking list.
+  Tokens are 32 OS-random bytes encoded as unpadded base64url; failure of the OS random source stops token generation.
+- `Options.readiness` selects `ReadyLine` (the default for navi) or `None` for finite jobs.
+  `None` starts at `Readiness::NotRequired`, treats all output as display text, and enforces neither the ready timeout nor an exit-before-ready failure; `wait_ready` returns an explicit no-readiness error.
+  Spawn/read/monitor failures remain errors.
+- Each piped output has a blocking std reader thread; this works with Linux, Windows pipes and macOS without an async runtime.
+  Stdin defaults to null; a held-open pipe option lets the supervisor retain the write end separately from the child lock and never write to it.
+  Navi uses that pipe with `--exit-on-stdin-eof`.
+- An `Arc<Mutex<...>>` holds a bounded snapshot, copied by the UI; a notify callback runs after updates, outside the lock, as in the RPC session.
+  UI scheduling never holds up pipe reads; the callback promptly requests a repaint.
+- A monitor polls `try_wait` every 100 ms (provisional: exit is shown within 0.1 s).
+  The child lock covers only `try_wait` or `kill`, so a blocking wait cannot delay a kill.
+- `stop` first closes the held stdin pipe without waiting behind the child lock, waits during the grace period, then kills and reaps.
+  Drop also closes that pipe before killing and reaping a running child.
+  Both await readers for at most the remaining drain timeout, detach them and join only the monitor on drop; detached readers keep updating the shared state until the pipes close.
+- The drain timeout is 1 s after reaping: the exited child's output is already in the pipe and is read within milliseconds.
+  The bound matters when a descendant holds a pipe open and keeps GUI shutdown responsive.
+  Expiry records an error that output is no longer awaited; exit waits finish after draining or expiry.
+  The monitor and shutdown calls share one deadline, so repeated waits do not extend it.
+- If the GUI itself crashes or is killed, the OS closes the held stdin pipe, allowing `mrtk --exit-on-stdin-eof` to shut down normally.
+  This crate cannot enforce termination of a hung child after the GUI dies: std provides no portable parent-death signal.
+  A Windows job object is a later platform task.
+  Descendants (programs that `mrtk` started) are not killed by this crate; `mrtk`'s own shutdown is responsible for them.
 
 ## Child process output
 
 - Output is not read on the UI thread.
-- Pending lines are bounded to 64 KiB per pipe, far above normal output. An overlong display line is wholly replaced by one marker and discarded to the next newline: a credential split at a cut cannot be masked reliably. Display lines split on LF or CR, treating CRLF as one delimiter, including a final unterminated line. Machine-readable lines retain LF framing and strip only one trailing CR; embedded CR bytes are not display delimiters.
-- Display lines keep at most 1000 characters after masking, plus a visible `…` when truncated. Output and supervisor errors each retain 1000 entries; older entries are dropped and counted. These values are provisional: bounded memory as in the RPC session, and readable lines; revisit when the log panel is designed.
-- Lines defined as machine-readable (the readiness line, progress JSON) are decoded whole in their format, without display processing. A line over the limit or not in the format is an error; it is never silently dropped or truncated. Which lines are machine-readable is defined by MRTKLIB.
-- In ready-line mode, this slice recognizes only stderr lines starting with `MRTK-RPC-READY `: decode a JSON object with a string `url`, ignore unknown members and never display the line. Malformed UTF-8, overlong or malformed readiness lines fail startup; a second ready line records an error.
-- Readiness is waiting, ready with a URL, or failed; callers copy the snapshot or block on a condition variable. Exit before ready records the exit status after stderr is drained or the drain timeout passes, avoiding a race with the final ready line without waiting forever for inherited pipes. A ready line already read keeps winning.
-- The ready timeout is 10 s, and remains enforced after exit while draining: the server reports listening immediately, so healthy starts are fast; this allows a slow machine but reports a stuck start. Measured Linux replay readiness is 23–33 ms; start to running is 0.1–0.3 s, the first valid PPP solution is 0.65–0.86 s after Start (mode `ppp-kine`), and stop to stopped is about 50 ms. These measurements support retaining the ready, request and exit timeouts.
+- Pending lines are bounded to 64 KiB per pipe, far above normal output.
+  An overlong display line is wholly replaced by one marker and discarded to the next newline: a credential split at a cut cannot be masked reliably.
+  Display lines split on LF or CR, treating CRLF as one delimiter, including a final unterminated line.
+  Machine-readable lines retain LF framing and strip only one trailing CR; embedded CR bytes are not display delimiters.
+- Display lines keep at most 1000 characters after masking, plus a visible `…` when truncated.
+  Output and supervisor errors each retain 1000 entries; older entries are dropped and counted.
+  These values are provisional: bounded memory as in the RPC session, and readable lines; revisit when the log panel is designed.
+- Lines defined as machine-readable (the readiness line, progress JSON) are decoded whole in their format, without display processing.
+  A line over the limit or not in the format is an error; it is never silently dropped or truncated.
+  Which lines are machine-readable is defined by MRTKLIB.
+- In ready-line mode, this slice recognizes only stderr lines starting with `MRTK-RPC-READY `: decode a JSON object with a string `url`, ignore unknown members and never display the line.
+  Malformed UTF-8, overlong or malformed readiness lines fail startup; a second ready line records an error.
+- Readiness is waiting, ready with a URL, or failed; callers copy the snapshot or block on a condition variable.
+  Exit before ready records the exit status after stderr is drained or the drain timeout passes, avoiding a race with the final ready line without waiting forever for inherited pipes.
+  A ready line already read keeps winning.
+- The ready timeout is 10 s, and remains enforced after exit while draining: the server reports listening immediately, so healthy starts are fast; this allows a slow machine but reports a stuck start.
+  Measured Linux replay readiness is 23–33 ms; start to running is 0.1–0.3 s, the first valid PPP solution is 0.65–0.86 s after Start (mode `ppp-kine`), and stop to stopped is about 50 ms. These measurements support retaining the ready, request and exit timeouts.
 - Other lines are shown without parsing, processed in this order: split into lines, lossy UTF-8 decoding, credential masking, truncation.
   Rationale: masking after truncation can miss a pattern such as `user:pass@host` whose `@host` was cut off, and show part of a password.
 - A pipe read error is displayed and the pending incomplete line is discarded: it may also cut a credential in the middle.
 
 ## Credentials
 
-- Credentials are masked at a single point before anything is displayed or logged. Targets: URL userinfo, configuration values that the schema marks as secret, and the token created by the GUI.
-- `mrtklib_egui_supervisor::mask::mask` first replaces every non-empty supplied secret value with `***`, so a secret spanning userinfo and host is removed whole. Within each whitespace-separated word it then skips leading quotes, an assignment prefix and an optional `scheme://`; before the first path slash, userinfo ends at the last `@`. Userinfo containing a colon is replaced entirely by `***`; userinfo without a password stays visible. Schema-marked secrets will be supplied when configuration RPC exists.
-- The backend masks secrets in runtime state (streams, log, status). `getConfig` can return plaintext to the authenticated GUI, so the GUI masks marked values on screen and in logs.
+- Credentials are masked at a single point before anything is displayed or logged.
+  Targets: URL userinfo, configuration values that the schema marks as secret, and the token created by the GUI.
+- `mrtklib_egui_supervisor::mask::mask` first replaces every non-empty supplied secret value with `***`, so a secret spanning userinfo and host is removed whole.
+  Within each whitespace-separated word it then skips leading quotes, an assignment prefix and an optional `scheme://`; before the first path slash, userinfo ends at the last `@`.
+  Userinfo containing a colon is replaced entirely by `***`; userinfo without a password stays visible.
+  Schema-marked secrets will be supplied when configuration RPC exists.
+- The backend masks secrets in runtime state (streams, log, status).
+  `getConfig` can return plaintext to the authenticated GUI, so the GUI masks marked values on screen and in logs.
 - Masking patterns are tested.
 
 ## Settings persistence
 
-- The GUI's own state (windows, recent files, the last settings of each application) is stored in the directory of the executables, at least in the first implementation. The GUI runs standalone, without installation.
-  Rationale: this is how RTKLIB is used. If the directory is not writable, saving fails with an error message; there is no fallback location.
-- `MRTKLIB_EGUI_SETTINGS_DIR` selects a development settings directory. A relative override resolves against the current directory, an empty override is an error, and there is no fallback. Otherwise the directory is the GUI executable's directory. Navi runs its child there and always supplies the explicit `.toml` configuration described above: RTKNAVI keeps settings and navigation data next to its executable; TOML is MRTKLIB's canonical format and the future `saveConfig` accepts only `.toml`. An explicit extension avoids the implicit `./rtkrcv.conf`, which MRTKLIB reads as the legacy format.
-- Relative configuration paths resolve against the settings directory, and `rtkrcv.nav` is saved there. The backend reads configuration at process startup; editing it requires an application restart until configuration RPC exists. An unwritable settings directory makes navigation data saving and relative outputs fail; there is no fallback location.
-- Positioning settings can be loaded from and saved to MRTKLIB TOML files. Whether to share them with the CLI is the user's choice.
+- The GUI's own state (windows, recent files, the last settings of each application) is stored in the directory of the executables, at least in the first implementation.
+  The GUI runs standalone, without installation.
+  Rationale: this is how RTKLIB is used.
+  If the directory is not writable, saving fails with an error message; there is no fallback location.
+- `MRTKLIB_EGUI_SETTINGS_DIR` selects a development settings directory.
+  A relative override resolves against the current directory, an empty override is an error, and there is no fallback.
+  Otherwise the directory is the GUI executable's directory.
+  Navi runs its child there and always supplies the explicit `.toml` configuration described above: RTKNAVI keeps settings and navigation data next to its executable; TOML is MRTKLIB's canonical format and the future `saveConfig` accepts only `.toml`.
+  An explicit extension avoids the implicit `./rtkrcv.conf`, which MRTKLIB reads as the legacy format.
+- Relative configuration paths resolve against the settings directory, and `rtkrcv.nav` is saved there.
+  The backend reads configuration at process startup; editing it requires an application restart until configuration RPC exists.
+  An unwritable settings directory makes navigation data saving and relative outputs fail; there is no fallback location.
+- Positioning settings can be loaded from and saved to MRTKLIB TOML files.
+  Whether to share them with the CLI is the user's choice.
 - The last positioning settings of each application are also stored as TOML in that directory, read and written through MRTKLIB.
-  Rationale: this follows RTKLIB, whose GUIs keep their own settings and import or export the CLI option format. Editing a CLI TOML file in place would require rewriting parts of it while keeping comments and unknown keys.
+  Rationale: this follows RTKLIB, whose GUIs keep their own settings and import or export the CLI option format.
+  Editing a CLI TOML file in place would require rewriting parts of it while keeping comments and unknown keys.
 - Conv's controls are `mrtk convert` arguments, not an MRTKLIB configuration, so conv keeps them in the JSON settings file described in the Conv section.
 
 ## Real-server tests
 
-Mock tests remain the default (`cargo test`). Linux navi tests prefixed `real_backend_` are ignored unless explicitly requested. They require `MRTKLIB_EGUI_TEST_MRTK` (the local executable) and `MRTKLIB_EGUI_TEST_MRTKLIB_DIR` (the local source tree); missing variables fail clearly rather than skipping. The tests neither fetch nor build MRTKLIB.
+Mock tests remain the default (`cargo test`).
+Linux navi tests prefixed `real_backend_` are ignored unless explicitly requested.
+They require `MRTKLIB_EGUI_TEST_MRTK` (the local executable) and `MRTKLIB_EGUI_TEST_MRTKLIB_DIR` (the local source tree); missing variables fail clearly rather than skipping.
+The tests neither fetch nor build MRTKLIB.
 
 ```sh
 MRTKLIB_EGUI_TEST_MRTK=/path/to/MRTKLIB/build/mrtk \
@@ -272,27 +782,52 @@ MRTKLIB_EGUI_TEST_MRTKLIB_DIR=/path/to/MRTKLIB \
   cargo test -p mrtklib-egui-navi -- --ignored real_backend_
 ```
 
-The tests use system `tar` to extract the tree's MALIB archive into temporary directories. Literal substitutions in `conf/malib/rtkrcv.toml` replace the data prefix and stream1 output path; they do not parse TOML. They launch through the controller's supervisor/session path with an explicit settings directory, observe running and a valid solution, stop, verify `outputExists` paths on the next Start, consent through the dialog and start again, then verify RPC shutdown exits with status 0. A separate test closes held stdin through `Supervisor::stop` without an RPC connection and checks exit status 0 and navigation data saved in the settings directory. Every wait is bounded; no window is opened.
+The tests use system `tar` to extract the tree's MALIB archive into temporary directories.
+Literal substitutions in `conf/malib/rtkrcv.toml` replace the data prefix and stream1 output path; they do not parse TOML.
+They launch through the controller's supervisor/session path with an explicit settings directory, observe running and a valid solution, stop, verify `outputExists` paths on the next Start, consent through the dialog and start again, then verify RPC shutdown exits with status 0.
+A separate test closes held stdin through `Supervisor::stop` without an RPC connection and checks exit status 0 and navigation data saved in the settings directory.
+Every wait is bounded; no window is opened.
 
-Conv also has an ignored `real_backend_convert_ubx` test using the same two environment variables. It converts `tests/data/rtklib/rcvraw/ubx_20080526.ubx` from the supplied tree through the controller, with only OBS and NAV selected in a temporary output directory. It waits at most 30 s, checks exit status 0 and a nonempty OBS file, and needs no window. Run it with `cargo test -p mrtklib-egui-conv -- --ignored real_backend_`.
+Conv also has an ignored `real_backend_convert_ubx` test using the same two environment variables.
+It converts `tests/data/rtklib/rcvraw/ubx_20080526.ubx` from the supplied tree through the controller, with only OBS and NAV selected in a temporary output directory.
+It waits at most 30 s, checks exit status 0 and a nonempty OBS file, and needs no window.
+Run it with `cargo test -p mrtklib-egui-conv -- --ignored real_backend_`.
 
-Conv's ignored `snapshot_` tests use `egui_kittest` 0.36.2 with only its `wgpu` feature and `image` PNG support. The harness calls the same drawing and logic methods as the native app, with the application's font/style setup and the actual initial 760 by 700 window size. A test-only controller explicitly prohibits process launches. The tests open Options, Signal Mask and overwrite dialogs by their labelled buttons, and render those views plus the main form to PNGs without a visible window. They require a GPU adapter (a software adapter is sufficient) and a nonempty output directory variable; missing configuration or rendering failures fail clearly.
+Conv's ignored `snapshot_` tests use `egui_kittest` 0.36.2 with only its `wgpu` feature and `image` PNG support.
+The harness calls the same drawing and logic methods as the native app, with the application's font/style setup and the actual initial 760 by 700 window size.
+A test-only controller explicitly prohibits process launches.
+The tests open Options, Signal Mask and overwrite dialogs by their labelled buttons, and render those views plus the main form to PNGs without a visible window.
+They require a GPU adapter (a software adapter is sufficient) and a nonempty output directory variable; missing configuration or rendering failures fail clearly.
 
 ```sh
 MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
   cargo test -p mrtklib-egui-conv -- --ignored snapshot_
 ```
 
-The files are `snapshot_main.png`, `snapshot_options.png`, `snapshot_mask.png` and `snapshot_overwrite.png`. On NixOS, run in the development shell (`nix develop`); its `LD_LIBRARY_PATH` supplies the GPU runtime libraries. These are review artifacts, not pixel-comparison baselines, so platform font differences do not fail normal tests.
+The files are `snapshot_main.png`, `snapshot_options.png`, `snapshot_mask.png` and `snapshot_overwrite.png`.
+On NixOS, run in the development shell (`nix develop`); its `LD_LIBRARY_PATH` supplies the GPU runtime libraries.
+These are review artifacts, not pixel-comparison baselines, so platform font differences do not fail normal tests.
 
-Plot's ignored `real_mrtklib_pos_files` test reads both MALIB and MADOCA solution files directly from the supplied MRTKLIB tree, requiring nonempty data, zero malformed lines, and Q=1…6. It does not start a backend or extract/fetch files.
+Plot's ignored `real_mrtklib_pos_files` test reads both MALIB and MADOCA solution files directly from the supplied MRTKLIB tree, requiring nonempty data, zero malformed lines, and Q=1…6.
+It does not start a backend or extract/fetch files.
 
 ```sh
 MRTKLIB_EGUI_TEST_MRTKLIB_DIR=/path/to/MRTKLIB \
   cargo test -p mrtklib-egui-plot -- --ignored real_mrtklib_pos_files
 ```
 
-Plot's ignored `snapshot_` tests use the same restricted `egui_kittest`/PNG dependencies and shared font/style setup, at its initial 1000 by 760 window size. They draw Gnd Trk, Position, NSat and Options to `snapshot_plot_gnd_trk.png`, `snapshot_plot_position.png`, `snapshot_plot_nsat.png` and `snapshot_plot_options.png`. Options also renders with every text style scaled by 1.6 to `snapshot_plot_options_large_text.png`. When `MRTKLIB_EGUI_TEST_MRTKLIB_DIR` supplies the MALIB solution file, it is used; otherwise a small synthetic solution fixture is used. A supplied file that exists but fails to parse fails the test. The additional `snapshot_solution2_overlay_and_difference` test requires the supplied MRTKLIB tree and reads both MALIB `...-1100.pp.pos` and `...-1100.rt.pos` files without a synthetic fallback. It renders overlay and difference in Gnd Trk and Position to `snapshot_plot_solution2_overlay.png`, `snapshot_plot_solution2_difference.png`, `snapshot_plot_solution2_overlay_position.png` and `snapshot_plot_solution2_difference_position.png`. Plot has no process-launch code, including in its controller or test harness. Five additional ignored tests (`snapshot_grid_off`, `snapshot_grid_lines`, `snapshot_grid_lines_labels`, `snapshot_grid_circles`, `snapshot_grid_circles_labels`) each render their format with Show Grid on and off to `snapshot_plot_grid_<format>.png` and `snapshot_plot_grid_<format>_hidden.png`. Structural tests cover centre cross, origin dot, rectangular versus circular geometry, label placement/rotation, clipping across resizes, time-plot independence, Options measured geometry at default and 1.6× text styles (uniform label/field cell widths across all three columns, widget overlap, dialog containment, column/row order, the shared LLH span and full-block Map input widths), remeasurement when text sizes grow and shrink, first-frame geometry checked with `step()` on opening and after text-size or numeric-content changes, independent grid/statistics font sizes, validation and old/new settings round trips. The ignored `snapshot_configured_text_sizes` test renders rectangular and circular labels at 18 pt with 16 pt statistics to `snapshot_plot_text_sizes_grid.png` and `snapshot_plot_text_sizes_circles.png`. The additional `snapshot_map_localhost` test serves a synthetic PNG from a temporary localhost HTTP server and renders the tile background and attribution to `snapshot_plot_map_localhost.png`; it needs no configured tile provider.
+Plot's ignored `snapshot_` tests use the same restricted `egui_kittest`/PNG dependencies and shared font/style setup, at its initial 1000 by 760 window size.
+They draw Gnd Trk, Position, NSat and Options to `snapshot_plot_gnd_trk.png`, `snapshot_plot_position.png`, `snapshot_plot_nsat.png` and `snapshot_plot_options.png`.
+Options also renders with every text style scaled by 1.6 to `snapshot_plot_options_large_text.png`.
+When `MRTKLIB_EGUI_TEST_MRTKLIB_DIR` supplies the MALIB solution file, it is used; otherwise a small synthetic solution fixture is used.
+A supplied file that exists but fails to parse fails the test.
+The additional `snapshot_solution2_overlay_and_difference` test requires the supplied MRTKLIB tree and reads both MALIB `...-1100.pp.pos` and `...-1100.rt.pos` files without a synthetic fallback.
+It renders overlay and difference in Gnd Trk and Position to `snapshot_plot_solution2_overlay.png`, `snapshot_plot_solution2_difference.png`, `snapshot_plot_solution2_overlay_position.png` and `snapshot_plot_solution2_difference_position.png`.
+Plot has no process-launch code, including in its controller or test harness.
+Five additional ignored tests (`snapshot_grid_off`, `snapshot_grid_lines`, `snapshot_grid_lines_labels`, `snapshot_grid_circles`, `snapshot_grid_circles_labels`) each render their format with Show Grid on and off to `snapshot_plot_grid_<format>.png` and `snapshot_plot_grid_<format>_hidden.png`.
+Structural tests cover centre cross, origin dot, rectangular versus circular geometry, label placement/rotation, clipping across resizes, time-plot independence, Options measured geometry at default and 1.6× text styles (uniform label/field cell widths across all three columns, widget overlap, dialog containment, column/row order, the shared LLH span and full-block Map input widths), remeasurement when text sizes grow and shrink, first-frame geometry checked with `step()` on opening and after text-size or numeric-content changes, independent grid/statistics font sizes, validation and old/new settings round trips.
+The ignored `snapshot_configured_text_sizes` test renders rectangular and circular labels at 18 pt with 16 pt statistics to `snapshot_plot_text_sizes_grid.png` and `snapshot_plot_text_sizes_circles.png`.
+The additional `snapshot_map_localhost` test serves a synthetic PNG from a temporary localhost HTTP server and renders the tile background and attribution to `snapshot_plot_map_localhost.png`; it needs no configured tile provider.
 
 ```sh
 MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
@@ -301,18 +836,32 @@ MRTKLIB_EGUI_SNAPSHOT_DIR=/path/to/snapshots \
 
 ## Platforms
 
-- On Nix/NixOS, rfd needs `libdbus-1.so.3` (or `libdbus-1.so`) at run time for xdg-portal dialogs. The shared Nix runtime library list includes `pkgs.dbus.lib`, both in the executable run paths for `nix run` and in the development shell's `LD_LIBRARY_PATH`, so this dependency is available without a separate launcher setting.
-- Linux and Windows are targets. Development and first verification happen on Linux. `mrtk run` works on Windows only after the MRTKLIB Windows port reaches the stream layer.
-- On Windows the wgpu renderer uses only the DX12 backend by default; `WGPU_BACKEND` (for example `gl` or `vulkan`) overrides it. wgpu enumerates every enabled backend at startup, and with Vulkan enabled an Intel Vulkan driver (`igvk64.dll`) crashed the process before a window opened, while DX12 and GL both worked. DX12 is part of every Windows version MRTKLIB's Windows port supports (Windows 10 version 1903 and later); only GPUs older than about 2012 lack a DX12 driver, and machines without a GPU get the WARP software adapter. GL is left out of the default, because it does not help machines without a GPU (OpenGL 1.1 only) and it would add a second adapter to choose from.
-- macOS is a future target. It is not verified or guaranteed, because there is no test environment. Libraries and threading choices must not exclude it.
+- On Nix/NixOS, rfd needs `libdbus-1.so.3` (or `libdbus-1.so`) at run time for xdg-portal dialogs.
+  The shared Nix runtime library list includes `pkgs.dbus.lib`, both in the executable run paths for `nix run` and in the development shell's `LD_LIBRARY_PATH`, so this dependency is available without a separate launcher setting.
+- Linux and Windows are targets.
+  Development and first verification happen on Linux.
+  `mrtk run` works on Windows only after the MRTKLIB Windows port reaches the stream layer.
+- On Windows the wgpu renderer uses only the DX12 backend by default; `WGPU_BACKEND` (for example `gl` or `vulkan`) overrides it. wgpu enumerates every enabled backend at startup, and with Vulkan enabled an Intel Vulkan driver (`igvk64.dll`) crashed the process before a window opened, while DX12 and GL both worked.
+  DX12 is part of every Windows version MRTKLIB's Windows port supports (Windows 10 version 1903 and later); only GPUs older than about 2012 lack a DX12 driver, and machines without a GPU get the WARP software adapter.
+  GL is left out of the default, because it does not help machines without a GPU (OpenGL 1.1 only) and it would add a second adapter to choose from.
+- macOS is a future target.
+  It is not verified or guaranteed, because there is no test environment.
+  Libraries and threading choices must not exclude it.
 
 ## Distribution
 
 - Releases are archives on GitHub Releases, without an installer.
-- Binary archives are zip files for Windows only. Linux users build from source (the README), because a Linux binary is tied to the glibc version it was built against. macOS has no binary release.
+- Binary archives are zip files for Windows only.
+  Linux users build from source (the README), because a Linux binary is tied to the glibc version it was built against. macOS has no binary release.
 - Each application stays a separate executable, as RTKLIB ships one executable per application.
-- Release executables are built with the `dist` profile: the `release` profile plus `lto = "fat"`, `codegen-units = 1` and `strip = "symbols"`. LTO and a single codegen unit only slow the build; stripping removes the symbol table that `release` keeps. The everyday `release` build is unchanged so that rebuilding after a change stays fast. Without symbols a panic backtrace shows no function names; whether to keep separate debug information for crash reports is decided with the first binary release.
-- The license is `BSD-2-Clause OR MIT OR Apache-2.0`. The bundled `mrtk` carries the MRTKLIB BSD-2-Clause notice.
-- Dependencies compiled into the applications must have permissive licenses compatible with distributing the applications under `BSD-2-Clause OR MIT OR Apache-2.0`. When a crate offers alternatives, such as `Apache-2.0 OR GPL-2.0-only`, the permissive alternative applies. Copyleft crates are avoided in dev-dependencies too: `egui_kittest` uses only `wgpu`, leaving out `snapshot` because it pulls an MPL-2.0 crate.
+- Release executables are built with the `dist` profile: the `release` profile plus `lto = "fat"`, `codegen-units = 1` and `strip = "symbols"`.
+  LTO and a single codegen unit only slow the build; stripping removes the symbol table that `release` keeps.
+  The everyday `release` build is unchanged so that rebuilding after a change stays fast.
+  Without symbols a panic backtrace shows no function names; whether to keep separate debug information for crash reports is decided with the first binary release.
+- The license is `BSD-2-Clause OR MIT OR Apache-2.0`.
+  The bundled `mrtk` carries the MRTKLIB BSD-2-Clause notice.
+- Dependencies compiled into the applications must have permissive licenses compatible with distributing the applications under `BSD-2-Clause OR MIT OR Apache-2.0`.
+  When a crate offers alternatives, such as `Apache-2.0 OR GPL-2.0-only`, the permissive alternative applies.
+  Copyleft crates are avoided in dev-dependencies too: `egui_kittest` uses only `wgpu`, leaving out `snapshot` because it pulls an MPL-2.0 crate.
 - Binary releases include the license texts and copyright notices of all Rust dependencies compiled into the executables, generated from Cargo metadata at release time, in addition to the MRTKLIB notice above.
 - Release artifacts record the MRTKLIB commit used for the build and whether its source tree had uncommitted changes.
