@@ -77,3 +77,5 @@ The checks for changes are listed in [`AGENTS.md`](AGENTS.md). Tests against a r
 ## License
 
 Licensed under any of [BSD-2-Clause](LICENSE-BSD), [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+
+Exception: `crates/mrtklib-egui-mock/contract/openrpc.json` is a copy of a file from MRTKLIB and stays under MRTKLIB's BSD 2-Clause license ([its license file](crates/mrtklib-egui-mock/contract/LICENSE)).
