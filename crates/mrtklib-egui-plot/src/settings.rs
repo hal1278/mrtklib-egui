@@ -52,6 +52,8 @@ pub(crate) struct Options {
     pub origin: usize,
     pub llh: [f64; 3],
     pub y_range: f64,
+    pub anim_cycle: i32,
+    pub ref_cycle: u32,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -66,6 +68,8 @@ impl Default for Options {
             origin: 2,
             llh: [0.0; 3],
             y_range: 5.0,
+            anim_cycle: 10,
+            ref_cycle: 100,
         }
     }
 }
@@ -255,6 +259,8 @@ mod tests {
                 llh: [35.0, 139.0, 10.0],
                 week_time: true,
                 y_range: 0.05,
+                anim_cycle: 20,
+                ref_cycle: 250,
                 ..Default::default()
             },
             ..Default::default()
@@ -263,6 +269,8 @@ mod tests {
         assert_eq!(load(&path).unwrap(), s);
         std::fs::write(&path, r#"{"quality":6}"#).unwrap();
         let migrated = load(&path).unwrap();
+        assert_eq!(migrated.options.anim_cycle, 10);
+        assert_eq!(migrated.options.ref_cycle, 100);
         assert!(migrated.qualities.visible(6));
         assert!(!migrated.qualities.visible(1));
         for text in [
@@ -271,6 +279,8 @@ mod tests {
             "{bad",
             r#"{"plot":9}"#,
             r#"{"options":{"y_range":0}}"#,
+            r#"{"options":{"ref_cycle":-1}}"#,
+            r#"{"options":{"anim_cycle":1.5}}"#,
         ] {
             std::fs::write(&path, text).unwrap();
             assert!(load(&path).is_err());

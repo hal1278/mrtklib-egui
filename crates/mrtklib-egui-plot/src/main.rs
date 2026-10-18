@@ -3,6 +3,7 @@ mod controller;
 mod data;
 mod grid;
 mod navigation;
+mod playback;
 mod reader;
 mod settings;
 mod summary;

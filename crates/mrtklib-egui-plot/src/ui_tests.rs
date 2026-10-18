@@ -1133,3 +1133,274 @@ fn difference_quality_buttons_follow_the_matched_quality() {
     assert!(h.query_by_label("FIX").is_none());
     assert!(h.query_by_label("SINGLE").is_some());
 }
+
+#[test]
+fn show_track_controls_marks_scroll_status_and_stops_animation() {
+    for kind in 0..3 {
+        let mut h = harness(kind);
+        assert!(h.state().playback_marks().is_empty());
+        assert!(h.state().cursor_time().is_none());
+        assert!(h.query_by_label("Time Scroll").is_none());
+        let fix = if kind == 0 { "Fix Center" } else { "Fix Horiz" };
+        assert!(h.get_by_label(fix).accesskit_node().is_disabled());
+        h.get_by_label("Show Track").click();
+        h.run();
+        assert!(!h.state().playback_marks().is_empty());
+        assert!(h.state().cursor_time().is_some());
+        assert!(h.query_by_label("Time Scroll").is_some());
+        assert!(!h.get_by_label(fix).accesskit_node().is_disabled());
+        assert!(h.state().summary().contains("Q="));
+        assert!(!h.state().summary().contains("Q1="));
+        // The harness advances 250 ms per frame; keep this a start/stop test.
+        h.state_mut().controller.settings.options.ref_cycle = 10_000;
+        h.get_by_label("Animate").click();
+        h.run();
+        assert!(h.state().playback.animating);
+        h.get_by_label("Show Track").click();
+        h.run();
+        assert!(!h.state().playback.animating);
+        assert!(h.state().playback_marks().is_empty());
+        assert!(h.state().cursor_time().is_none());
+        assert!(h.query_by_label("Time Scroll").is_none());
+        assert!(h.get_by_label(fix).accesskit_node().is_disabled());
+    }
+}
+#[test]
+fn scrollbar_pages_and_animation_use_primary_raw_indices_even_when_filtered() {
+    let mut c = two_solutions(1);
+    c.toggle(0);
+    c.toggle(1);
+    let mut h = harness_with_controller(c);
+    h.get_by_label("Show Track").click();
+    h.run();
+    h.get_by_label("All").click();
+    h.run();
+    assert!(h.state().controller.samples.is_empty());
+    let scroll = h.get_by_label("Time Scroll").rect();
+    h.event(egui::Event::PointerMoved(scroll.center()));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: scroll.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+    assert_eq!(h.state().playback.indices, [0, 10]);
+    assert_eq!(h.state().selected, Some((1, 10)));
+    assert_eq!(h.state().playback_marks()[0].index, 10);
+    let now = h.ctx.input(|i| i.time);
+    h.state_mut().playback.set_animating(true, now - 0.1);
+    h.step();
+    assert_eq!(h.state().playback.indices, [0, 20]);
+    let last = h.state().playback_count() - 1;
+    h.state_mut().playback.indices[1] = last - 1;
+    let now = h.ctx.input(|i| i.time);
+    h.state_mut().playback.set_animating(true, now - 0.1);
+    h.step();
+    assert_eq!(h.state().selected, Some((1, last)));
+    assert!(!h.state().playback.animating);
+}
+#[test]
+fn fixes_follow_selected_epoch_and_cursor_handle_selects_ceiling_epoch() {
+    for kind in 0..3 {
+        let mut h = harness(kind);
+        h.get_by_label("Show Track").click();
+        h.run();
+        h.state_mut().playback.indices[0] = 5;
+        h.run();
+        let s = h.state().current_sample().unwrap();
+        if kind == 0 {
+            assert!((h.state().viewport.track.x.center() - s.enu[0]).abs() < 1e-8);
+            assert!((h.state().viewport.track.y.center() - s.enu[1]).abs() < 1e-8);
+        } else {
+            if kind == 1 {
+                assert!((h.state().viewport.vertical[0].center() - s.enu[0]).abs() < 1e-8);
+            }
+            h.get_by_label("Fix Horiz").click();
+            h.run();
+            assert!((h.state().viewport.time.center() - s.time).abs() < 1e-8);
+            h.get_by_label("Fix Horiz").click();
+            h.run();
+            let frame = h.state().geometry.unwrap().frames[0].unwrap();
+            let r = h.state().viewport.time;
+            let start = egui::pos2(
+                frame.left() + ((s.time - r.min) / r.span()) as f32 * frame.width(),
+                frame.top(),
+            );
+            let target = h.state().controller.all_samples[0][8].time - 0.25;
+            let end_x = frame.left() + ((target - r.min) / r.span()) as f32 * frame.width();
+            drag(
+                &mut h,
+                start,
+                egui::vec2(end_x - start.x, 0.0),
+                egui::PointerButton::Primary,
+            );
+            assert_eq!(h.state().selected, Some((0, 8)));
+        }
+    }
+}
+#[test]
+fn track_click_selects_primary_first_hit_only_with_show_track() {
+    let mut h = harness(0);
+    h.get_by_label("Show Track").click();
+    h.run();
+    h.get_by_label("Fix Center").click();
+    h.run();
+    let s = &h.state().controller.all_samples[0][10];
+    let bounds = h.state().viewport.track;
+    let frame = h.state().geometry.unwrap().frames[0].unwrap();
+    let pos = egui::pos2(
+        frame.left() + ((s.enu[0] - bounds.x.min) / bounds.x.span()) as f32 * frame.width(),
+        frame.bottom() - ((s.enu[1] - bounds.y.min) / bounds.y.span()) as f32 * frame.height(),
+    );
+    h.event(egui::Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run();
+    assert_ne!(h.state().selected, Some((0, 0)));
+    let selected = h.state().selected;
+    h.get_by_label("Show Track").click();
+    h.run();
+    drag(&mut h, pos, egui::Vec2::ZERO, egui::PointerButton::Primary);
+    assert_eq!(h.state().selected, selected);
+}
+#[test]
+fn playback_buttons_fit_default_width_while_all_controls_are_visible() {
+    let mut h = harness(1);
+    h.get_by_label("Show Track").click();
+    h.run();
+    for label in [
+        "Show Track",
+        "Fix Horiz",
+        "Fix Vert",
+        "Animate",
+        "Fit Horizontal",
+        "Fit Vertical",
+        "Center Origin",
+        "5m...",
+    ] {
+        let r = h.get_by_label(label).rect();
+        assert!(r.right() <= INITIAL_SIZE[0], "{label}: {r:?}");
+    }
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_playback() {
+    for (kind, name) in [(0, "track"), (1, "position"), (2, "nsat")] {
+        let mut h = harness(kind);
+        h.get_by_label("Show Track").click();
+        h.run();
+        save(&mut h, &format!("snapshot_plot_playback_{name}"));
+    }
+}
+
+#[test]
+fn horizontal_fix_drag_moves_fixed_fraction_and_vertical_fix_blocks_pan() {
+    let mut h = harness(1);
+    h.get_by_label("Show Track").click();
+    h.run();
+    h.get_by_label("Fix Horiz").click();
+    h.run();
+    let before = h.state().viewport.clone();
+    let frame = h.state().geometry.unwrap().frames[1].unwrap();
+    drag(
+        &mut h,
+        frame.center(),
+        egui::vec2(40.0, 20.0),
+        egui::PointerButton::Primary,
+    );
+    let offset = 80.0 / f64::from(frame.width());
+    assert!((h.state().playback.horizontal_offset - offset).abs() < 1e-8);
+    assert_eq!(h.state().viewport.vertical, before.vertical);
+    let epoch = h.state().current_sample().unwrap();
+    assert!(
+        (h.state().viewport.time.center() - (epoch.time - offset * before.time.span() / 2.0)).abs()
+            < 1e-6
+    );
+    h.get_by_label("Show Track").click();
+    h.run();
+    assert!(!h.state().playback.fix_horizontal);
+    assert!(!h.state().playback.fix_vertical);
+    let before = h.state().viewport.clone();
+    let frame = h.state().geometry.unwrap().frames[1].unwrap();
+    drag(
+        &mut h,
+        frame.center(),
+        egui::vec2(40.0, 20.0),
+        egui::PointerButton::Primary,
+    );
+    assert_ne!(h.state().viewport.time, before.time);
+    assert_ne!(h.state().viewport.vertical[1], before.vertical[1]);
+}
+#[test]
+fn difference_uses_data1_clock_and_reference_marker_visibility() {
+    let mut c = two_solutions(0);
+    c.toggle(2);
+    let mut h = harness_with_controller(c);
+    h.get_by_label("Show Track").click();
+    h.run();
+    h.state_mut().playback.indices[0] = 5;
+    h.run();
+    assert_eq!(h.state().selected, Some((2, 5)));
+    assert_eq!(h.state().playback_marks()[0].source, 2);
+    assert_eq!(h.state().summary(), h.state().cursor_status(Some((0, 5))).0);
+    select(&mut h, "Gnd Trk", "Position");
+    assert!(h.state().playback_marks().is_empty());
+    assert!(h.state().cursor_time().is_some());
+    select(&mut h, "Position", "NSat");
+    assert!(h.state().playback_marks().is_empty());
+    assert!(h.state().cursor_time().is_none());
+}
+#[test]
+fn scrollbar_thumb_selects_epochs_and_empty_primary_stops_playback() {
+    let mut h = harness(1);
+    h.get_by_label("Show Track").click();
+    h.run();
+    let scroll = h.get_by_label("Time Scroll").rect();
+    let start = egui::pos2(scroll.left() + 8.5, scroll.center().y);
+    drag(
+        &mut h,
+        start,
+        egui::vec2((scroll.width() - 17.0) / 2.0, 0.0),
+        egui::PointerButton::Primary,
+    );
+    let last = h.state().playback_count() - 1;
+    assert_eq!(
+        h.state().playback.indices[0],
+        (last as f32 / 2.0).round() as usize
+    );
+    h.get_by_label("Animate").click();
+    h.run();
+    h.state_mut().controller.clear();
+    h.run();
+    assert!(!h.state().playback.animating);
+    assert!(h.state().selected.is_none());
+    assert!(h.query_by_label("Time Scroll").is_none());
+}
+
+#[test]
+fn fit_range_releases_horizontal_fix_but_fit_time_keeps_it() {
+    let mut h = harness(1);
+    h.get_by_label("Show Track").click();
+    h.run();
+    h.get_by_label("Fix Horiz").click();
+    h.run();
+    h.get_by_label("Fit Horizontal").click();
+    h.run();
+    assert!(h.state().playback.fix_horizontal);
+    h.get_by_label("Fit Vertical").click();
+    h.run();
+    assert!(!h.state().playback.fix_horizontal);
+    h.get_by_label("Fix Horiz").click();
+    h.run();
+    select(&mut h, "Position", "Gnd Trk");
+    assert!(!h.state().playback.fix_horizontal);
+}
