@@ -46,6 +46,7 @@ pub(crate) struct Controller {
     pub dataset: Option<Dataset>,
     pub dataset2: Option<Dataset>,
     pub selection: Selection,
+    /// Unfiltered display samples; indices and time_ns retain the raw dataset identity/GPST.
     pub all_samples: [Vec<data::Sample>; 2],
     pub samples: Vec<data::Sample>,
     /// Qualities of the shown samples before the quality filter (difference: matched Q).
@@ -329,6 +330,11 @@ impl Controller {
                 Err(error) => self.conversion_errors[slot] = Some(error),
             }
         }
+        // Plot coordinates are display times, so UTC ticks fall on round UTC times.
+        for s in self.all_samples.iter_mut().flatten() {
+            s.set_vertical(self.settings.height);
+            s.time = display_time(s.time, &self.settings.options);
+        }
         if self.selection.difference {
             if self.settings.plot != 2 {
                 self.samples = data::difference(&self.all_samples[0], &self.all_samples[1], 0);
@@ -351,11 +357,6 @@ impl Controller {
         }
         self.samples
             .retain(|s| self.settings.qualities.visible(s.quality));
-        // Plot coordinates are display times, so UTC ticks fall on round UTC times.
-        for s in &mut self.samples {
-            s.set_vertical(self.settings.height);
-            s.time = display_time(s.time, &self.settings.options);
-        }
     }
     pub fn apply_options(&mut self, options: Options) -> Result<(), String> {
         options.validate()?;
@@ -435,6 +436,55 @@ pub(crate) fn display_time(gpst: f64, options: &crate::settings::Options) -> f64
 mod tests {
     use super::*;
     use std::time::Duration;
+    #[test]
+    fn unfiltered_and_filtered_samples_share_display_time_and_height_with_raw_identity() {
+        let mut c = Controller::fixture(reader::synthetic());
+        c.dataset2 = c.dataset.clone();
+        c.selection.data = [true; 2];
+        c.settings.plot = 1;
+        c.settings.height = true;
+        c.settings.options.utc = true;
+        c.settings.qualities.0[1] = false;
+        c.rebuild();
+        for slot in 0..2 {
+            let raw = &c.dataset_at(slot).unwrap().points;
+            assert_eq!(c.all_samples[slot].len(), raw.len());
+            for (sample, point) in c.all_samples[slot].iter().zip(raw) {
+                assert_eq!(sample.time, point.time - 18.0);
+                assert_eq!(sample.time_ns, point.time_ns);
+                assert_eq!(sample.component(2), sample.height);
+                assert_eq!(sample.time_ns, raw[sample.index].time_ns);
+            }
+        }
+        assert!(c.samples.len() < c.all_samples.iter().map(Vec::len).sum());
+        for sample in &c.samples {
+            let unfiltered = &c.all_samples[sample.source][sample.index];
+            assert_eq!(sample.time, unfiltered.time);
+            assert_eq!(sample.component(2), unfiltered.component(2));
+        }
+        c.selection.toggle(2);
+        c.rebuild();
+        for sample in &c.samples {
+            assert_eq!(
+                sample.time,
+                c.dataset.as_ref().unwrap().points[sample.index].time - 18.0
+            );
+            assert_eq!(sample.component(2), Some(0.0));
+        }
+        // Rebuild always starts from GPST and ENU, including when changing formats.
+        c.settings.options.week_time = true;
+        c.settings.height = false;
+        c.rebuild();
+        for slot in 0..2 {
+            for sample in &c.all_samples[slot] {
+                assert_eq!(
+                    sample.time,
+                    c.dataset_at(slot).unwrap().points[sample.index].time
+                );
+                assert_eq!(sample.component(2), Some(sample.enu[2]));
+            }
+        }
+    }
     #[test]
     fn independent_data_toggles_allow_overlay_none_and_exclude_difference() {
         let mut s = Selection::default();

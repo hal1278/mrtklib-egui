@@ -4,7 +4,7 @@ use crate::{
     data::{self, Sample},
     grid,
     navigation::{self, Area, Bounds, DragMode, Range, Target as ViewTarget, Viewport},
-    playback::Playback,
+    playback::{Fixes, Playback},
     settings::{ORIGIN_RANGES, ORIGINS, Options, PLOTS, SIZES},
     summary, time,
 };
@@ -285,11 +285,16 @@ impl PlotApp {
                 .cloned()
         }
     }
+    fn fixes(&self) -> Fixes {
+        self.playback.fixes(
+            self.controller.settings.plot,
+            self.data_selected() && self.playback_count() > 0,
+        )
+    }
     fn follow_epoch(&mut self) {
         if let Some(s) = self.current_sample() {
-            self.playback.follow(
+            self.fixes().follow(
                 &mut self.viewport,
-                self.controller.settings.plot,
                 s.time,
                 std::array::from_fn(|i| s.component(i)),
             );
@@ -444,6 +449,7 @@ impl PlotApp {
             Area::Outside
         };
         let track = geometry.kind == 0;
+        let fixes = self.fixes();
         let wheel_area = if active_layer {
             geometry.wheel_area(point)
         } else {
@@ -486,7 +492,7 @@ impl PlotApp {
                             let factor = if direction == 1 { 1.0 / 1.05 } else { 1.05 };
                             b.x = b.x.scaled(b.x.center(), factor, f64::from(pixels.width()));
                             b.y = b.y.scaled(b.y.center(), factor, f64::from(pixels.height()));
-                        } else if !modifiers.ctrl && !self.playback.fix_horizontal {
+                        } else if !modifiers.ctrl && !fixes.horizontal {
                             if direction <= 2 {
                                 b.y = b.y.translated(
                                     if direction == 1 { fact } else { -fact } * b.y.span()
@@ -508,7 +514,7 @@ impl PlotApp {
                                 if direction == 3 { 1.05 } else { 1.0 / 1.05 },
                                 f64::from(pixels.width()),
                             );
-                        } else if !self.playback.fix_horizontal {
+                        } else if !fixes.horizontal {
                             self.viewport.time = r.translated(
                                 if direction == 3 { -fact } else { fact } * r.span()
                                     / f64::from(pixels.width()),
@@ -522,7 +528,7 @@ impl PlotApp {
                                     if direction == 1 { 1.0 / 1.05 } else { 1.05 },
                                     f64::from(pixels.height()),
                                 );
-                            } else if i != 0 || !self.playback.fix_vertical {
+                            } else if i != 0 || !fixes.vertical {
                                 *range = range.translated(
                                     if direction == 1 { fact } else { -fact } * range.span()
                                         / f64::from(pixels.height()),
@@ -580,7 +586,7 @@ impl PlotApp {
                     return;
                 }
             } else if !track
-                && !self.playback.fix_horizontal
+                && !fixes.horizontal
                 && let Some(sample) = self.current_sample()
                 && let Some(frame) = geometry.frames.iter().flatten().next()
             {
@@ -658,10 +664,10 @@ impl PlotApp {
                     drag.pixels,
                 );
                 if drag.mode == DragMode::Pan {
-                    if track && self.playback.fix_horizontal {
+                    if track && fixes.horizontal {
                         bounds = drag.bounds;
                     } else if !track {
-                        if self.playback.fix_horizontal {
+                        if fixes.horizontal {
                             bounds.x = drag.bounds.x;
                             if matches!(drag.target, ViewTarget::Both(_)) {
                                 self.playback.horizontal_offset = (drag.horizontal_offset
@@ -669,7 +675,7 @@ impl PlotApp {
                                     .clamp(-1.0, 1.0);
                             }
                         }
-                        if self.playback.fix_vertical && geometry.kind == 1 {
+                        if fixes.vertical && geometry.kind == 1 {
                             bounds.y = drag.bounds.y;
                         }
                     }
@@ -682,7 +688,7 @@ impl PlotApp {
         }
         if pointer.button_double_clicked(egui::PointerButton::Primary)
             && area != Area::Outside
-            && !self.playback.fix_horizontal
+            && !fixes.horizontal
         {
             let rect = geometry.frame(if track {
                 ViewTarget::Track
@@ -1555,7 +1561,7 @@ impl PlotApp {
         let ctx = ui.ctx().clone();
         let marks = self.playback_marks();
         let cursor_time = self.cursor_time();
-        let fix_horizontal = self.playback.fix_horizontal;
+        let fixes = self.fixes();
         let first_panel = self
             .controller
             .settings
@@ -1564,7 +1570,6 @@ impl PlotApp {
             .position(|on| *on)
             .unwrap_or(0);
         let current = self.current_sample();
-        let playback = &self.playback;
         let viewport = &mut self.viewport;
         let response = plot.show(ui, |pui| {
             if kind == 0
@@ -1578,12 +1583,7 @@ impl PlotApp {
             if kind == 0
                 && let Some(s) = &current
             {
-                playback.follow(
-                    viewport,
-                    kind,
-                    s.time,
-                    std::array::from_fn(|i| s.component(i)),
-                );
+                fixes.follow(viewport, s.time, std::array::from_fn(|i| s.component(i)));
             }
             let bounds = viewport.bounds(if kind == 0 {
                 ViewTarget::Track
@@ -1643,8 +1643,8 @@ impl PlotApp {
                 if component == first_panel {
                     pui.points(
                         Points::new("time cursor handle", vec![[time, bounds.y.max]])
-                            .radius(if fix_horizontal { 2.5 } else { 4.5 })
-                            .filled(fix_horizontal)
+                            .radius(if fixes.horizontal { 2.5 } else { 4.5 })
+                            .filled(fixes.horizontal)
                             .color(Color32::BLACK),
                     );
                 }
@@ -2011,22 +2011,23 @@ fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {
 }
 
 /// Indices of the selected epoch and, when it belongs to Data 1, of the Data 2 epoch
-/// within RTKPLOT's 2*DTTOL of its time (`plotdraw.cpp:186,675`). RTKPLOT keeps a separate,
-/// stale Data 2 index; following the Data 1 time keeps the Data 2 mark with the selection.
+/// within RTKPLOT's 2*DTTOL of its time (`plotdraw.cpp:186,675`). RTKPLOT synchronizes
+/// both solution indices in UpdateTime (`plotmain.cpp:2068–2109`), called after a track
+/// pick, cursor drag or animation tick (`plotmain.cpp:1480,1657,1959`).
 fn selected_marks(samples: &[Sample], selected: Option<(usize, usize)>) -> Vec<usize> {
     let Some(i) =
         selected.and_then(|index| samples.iter().position(|s| (s.source, s.index) == index))
     else {
         return vec![];
     };
-    let time = samples[i].time;
+    let time_ns = samples[i].time_ns;
     let companion = (samples[i].source == 0)
         .then(|| {
             samples
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| s.source == 1 && (s.time - time).abs() < 0.05)
-                .min_by(|a, b| (a.1.time - time).abs().total_cmp(&(b.1.time - time).abs()))
+                .filter(|(_, s)| s.source == 1 && (s.time_ns - time_ns).abs() < 50_000_000)
+                .min_by_key(|(_, s)| (s.time_ns - time_ns).abs())
                 .map(|(j, _)| j)
         })
         .flatten();

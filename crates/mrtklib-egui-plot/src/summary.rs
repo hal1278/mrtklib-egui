@@ -87,8 +87,10 @@ pub(crate) fn line(
     let Some((start, end)) = samples.first().zip(samples.last()) else {
         return format!("[{label}] N=0");
     };
-    let first = display_time(start.time, options);
-    let last = display_time(end.time, options);
+    // Samples may already use display time. Read GPST from their source indices;
+    // difference epochs retain the Solution-1 index and use its dataset here.
+    let first = display_time(dataset.points[start.index].time, options);
+    let last = display_time(dataset.points[end.index].time, options);
     let date_end = options.week_time
         || time::format(first, false, true)[..10] != time::format(last, false, true)[..10];
     let hz = (interval && samples.len() > 1)
