@@ -384,8 +384,12 @@ mod tests {
             home.join("data").join("in.ubx").to_str().unwrap()
         );
         let preview = prepared.command.preview();
-        for path in ["out/in.obs", "custom.nav", "data/in.ubx"] {
-            assert!(preview.contains(home.join(path).to_str().unwrap()));
+        for path in [
+            home.join("out").join("in.obs"),
+            home.join("custom.nav"),
+            home.join("data").join("in.ubx"),
+        ] {
+            assert!(preview.contains(path.to_str().unwrap()), "{preview}");
         }
     }
 
