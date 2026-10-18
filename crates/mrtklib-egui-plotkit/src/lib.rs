@@ -109,11 +109,13 @@ pub fn statistics(values: &[f64]) -> Statistics {
         rms: (values.iter().map(|v| v * v).sum::<f64>() / n).sqrt(),
     }
 }
-pub fn horizontal_2d(values: &[[f64; 3]]) -> f64 {
+/// RMS of the horizontal distance sqrt(E^2+N^2) about the origin. RTKPLOT labels twice this
+/// value `2D`; that name and the factor are ambiguous, so only the plain RMS is given.
+pub fn horizontal_rms(values: &[[f64; 3]]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    2.0 * (values
+    (values
         .iter()
         .map(|v| v[0] * v[0] + v[1] * v[1])
         .sum::<f64>()
@@ -162,7 +164,7 @@ mod tests {
         }
     }
     #[test]
-    fn sample_statistics_and_rtkplot_2d() {
+    fn sample_statistics_and_horizontal_rms() {
         assert_eq!(statistics(&[]), Statistics::default());
         assert_eq!(
             statistics(&[3.0]),
@@ -176,7 +178,7 @@ mod tests {
         close(s.average, 2.0, 1e-12);
         close(s.std, 2.0_f64.sqrt(), 1e-12);
         close(s.rms, 5.0_f64.sqrt(), 1e-12);
-        assert_eq!(horizontal_2d(&[[3.0, 4.0, 99.0]]), 10.0);
-        assert_eq!(horizontal_2d(&[]), 0.0);
+        assert_eq!(horizontal_rms(&[[3.0, 4.0, 99.0]]), 5.0);
+        assert_eq!(horizontal_rms(&[]), 0.0);
     }
 }

@@ -10,7 +10,7 @@ use crate::{
 use eframe::egui::{self, Color32};
 use egui_plot::{AxisHints, Line, LineStyle, Plot, PlotBounds, PlotPoint, Points};
 use mrtklib_egui_common::file_dialog::{FileDialog, Target};
-use mrtklib_egui_plotkit::{ecef_to_llh, enu_to_ecef, horizontal_2d, solution_style, statistics};
+use mrtklib_egui_plotkit::{ecef_to_llh, enu_to_ecef, horizontal_rms, solution_style, statistics};
 use mrtklib_egui_supervisor::mask::mask;
 
 pub(crate) const INITIAL_SIZE: [f32; 2] = [1000.0, 760.0];
@@ -1252,7 +1252,7 @@ impl PlotApp {
                     "2"
                 };
                 let overlay = if kind == 0 {
-                    let mut text = format!("[{label}] 2D={:.4} m", horizontal_2d(&enu));
+                    let mut text = format!("[{label}] Horiz RMS={:.4} m", horizontal_rms(&enu));
                     for (i, label) in ["E", "N", "U"].iter().enumerate() {
                         let s = statistics(&enu.iter().map(|p| p[i]).collect::<Vec<_>>());
                         text.push_str(&format!(
