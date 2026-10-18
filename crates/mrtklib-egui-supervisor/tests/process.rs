@@ -55,14 +55,16 @@ fn ready() {
     eprintln!("MRTK-RPC-READY {{\"url\":\"{URL}\"}}");
 }
 
-/// The peer has gone: end of stream, or a reset when Windows terminates the process.
+/// The peer has gone: end of stream. A process terminated on Windows does not close its
+/// sockets gracefully, so there the system resets the connection instead.
 fn peer_closed(socket: &mut TcpStream) -> bool {
     match socket.read(&mut [0]) {
         Ok(n) => n == 0,
-        Err(e) => matches!(
+        Err(e) if cfg!(windows) => matches!(
             e.kind(),
             std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
         ),
+        Err(e) => panic!("{e}"),
     }
 }
 
