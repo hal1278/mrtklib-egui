@@ -688,6 +688,7 @@ References prefixed `rtktrace/` use the `hal1278/rtktrace` repository at commit 
   With a directory, the preview is `Working directory: "…" | Program: …`; without one, it is the argv alone.
   This is a labelled display, not a shell command.
   Its preview quotes ambiguous words for display, not shell execution, and its debug output contains only that masked preview.
+  On Windows a backslash is an ordinary path character in the preview and quoted words keep single backslashes, so paths read as Windows paths; elsewhere quoting uses Rust's escaped form, which also makes control characters visible.
   Secret environment variables are supplied separately and their values added to the masking list.
   Tokens are 32 OS-random bytes encoded as unpadded base64url; failure of the OS random source stops token generation.
 - `Options.readiness` selects `ReadyLine` (the default for navi) or `None` for finite jobs.
