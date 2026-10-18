@@ -4,6 +4,7 @@ use crate::{
     data::{self, Sample},
     grid,
     navigation::{self, Area, Bounds, DragMode, Range, Target as ViewTarget, Viewport},
+    playback::{Fixes, Playback},
     settings::{ORIGIN_RANGES, ORIGINS, Options, PLOTS, SIZES},
     summary, time,
 };
@@ -26,6 +27,9 @@ pub(crate) struct PlotApp {
     load_revision: u64,
     revision: u64,
     selected: Option<(usize, usize)>,
+    playback: Playback,
+    cursor_drag: bool,
+    scroll_drag_offset: Option<f32>,
     hovered: Option<(usize, usize)>,
     cursor: Option<(usize, [f64; 2])>,
     status_width: f32,
@@ -108,6 +112,7 @@ struct Drag {
     bounds: Bounds,
     pixels: [f64; 2],
     button: egui::PointerButton,
+    horizontal_offset: f64,
 }
 impl PlotApp {
     pub fn new(ctx: &egui::Context) -> Self {
@@ -127,6 +132,9 @@ impl PlotApp {
             load_revision: 0,
             revision: 0,
             selected: None,
+            playback: Playback::default(),
+            cursor_drag: false,
+            scroll_drag_offset: None,
             hovered: None,
             cursor: None,
             status_width: INITIAL_SIZE[0],
@@ -173,6 +181,10 @@ impl PlotApp {
         }
         if self.load_revision != self.controller.load_revision {
             self.load_revision = self.controller.load_revision;
+            self.playback.indices = [0; 2];
+            if self.controller.settings.options.auto_fit && self.controller.settings.plot <= 1 {
+                self.playback.fix_horizontal = false;
+            }
             self.viewport.loaded(
                 self.controller.settings.plot,
                 self.controller.settings.options.auto_fit,
@@ -183,17 +195,265 @@ impl PlotApp {
         }
         if self.revision != self.controller.revision {
             self.revision = self.controller.revision;
-            self.selected = self
-                .controller
-                .samples
-                .iter()
-                .find(|s| {
-                    s.source == self.controller.selection.primary()
-                        || self.controller.selection.difference
-                })
-                .map(|s| (s.source, s.index));
             self.hovered = None;
         }
+        let slot = self.controller.selection.primary();
+        self.playback.tick(
+            ctx.input(|i| i.time),
+            &self.controller.settings.options,
+            slot,
+            self.playback_count(),
+        );
+        self.sync_selection();
+        if self.playback.animating && self.controller.settings.options.ref_cycle > 0 {
+            ctx.request_repaint_after(std::time::Duration::from_millis(u64::from(
+                self.controller.settings.options.ref_cycle,
+            )));
+        }
+    }
+    fn data_selected(&self) -> bool {
+        self.controller.selection.difference || self.controller.selection.data.iter().any(|on| *on)
+    }
+    fn cursor_time(&self) -> Option<f64> {
+        if !self.playback.show_track
+            || !self.data_selected()
+            || (self.controller.settings.plot == 2 && self.controller.selection.difference)
+        {
+            return None;
+        }
+        self.current_sample().map(|s| s.time)
+    }
+    fn playback_count(&self) -> usize {
+        self.controller
+            .dataset_at(self.controller.selection.primary())
+            .map_or(0, |d| d.points.len())
+    }
+    fn sync_selection(&mut self) {
+        let slot = self.controller.selection.primary();
+        let count = self.playback_count();
+        self.playback.indices[slot] = self.playback.indices[slot].min(count.saturating_sub(1));
+        self.selected = (count > 0).then_some((
+            if self.controller.selection.difference {
+                2
+            } else {
+                slot
+            },
+            self.playback.indices[slot],
+        ));
+    }
+    fn playback_marks(&self) -> Vec<Sample> {
+        if self.playback.show_track
+            && !(self.controller.settings.plot != 0 && self.controller.selection.difference)
+        {
+            let unfiltered = if self.controller.selection.difference {
+                data::difference(
+                    &self.controller.all_samples[0],
+                    &self.controller.all_samples[1],
+                    0,
+                )
+            } else {
+                self.controller
+                    .all_samples
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| self.controller.selection.data[*i])
+                    .flat_map(|(_, v)| v.iter().cloned())
+                    .collect()
+            };
+            selected_marks(&unfiltered, self.selected)
+                .into_iter()
+                .map(|i| unfiltered[i].clone())
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        }
+    }
+    fn current_sample(&self) -> Option<Sample> {
+        let (source, index) = self.selected?;
+        // In difference mode Gnd Trk and Position follow the displayed difference. RTKPLOT
+        // follows solution 1 on Position (`plotdraw.cpp:609-620`), which leaves the difference
+        // out of view for moving data.
+        if source == 2 && self.controller.settings.plot != 2 {
+            data::difference(
+                &self.controller.all_samples[0],
+                &self.controller.all_samples[1],
+                0,
+            )
+            .into_iter()
+            .find(|s| s.index == index)
+        } else {
+            self.controller.all_samples[self.controller.selection.primary()]
+                .iter()
+                .find(|s| s.index == index)
+                .cloned()
+        }
+    }
+    /// With Show Track, one line per shown dataset for the current epoch, so the status keeps
+    /// the line count of the summaries: Data 2 at the Data 1 time within 2*DTTOL (the mark
+    /// rule), or the matched difference. RTKPLOT shows only the selected solution
+    /// (`plotinfo.cpp:18-23`).
+    fn current_epoch_lines(&self) -> Vec<String> {
+        let Some((_, index)) = self.selected.filter(|_| self.data_selected()) else {
+            return vec![];
+        };
+        let c = &self.controller;
+        if c.selection.difference {
+            let line = data::difference(&c.all_samples[0], &c.all_samples[1], 0)
+                .into_iter()
+                .find(|s| s.index == index)
+                .map_or_else(
+                    || "[1-2] no matched epoch".to_owned(),
+                    |s| self.sample_status(&s).0,
+                );
+            return vec![line];
+        }
+        let primary = c.selection.primary();
+        let Some(current) = c.all_samples[primary].iter().find(|s| s.index == index) else {
+            return vec![];
+        };
+        let mut lines = vec![self.sample_status(current).0];
+        if primary == 0 && c.selection.data[1] {
+            let companion = c.all_samples[1]
+                .iter()
+                .filter(|s| (s.time_ns - current.time_ns).abs() < 50_000_000)
+                .min_by_key(|s| (s.time_ns - current.time_ns).abs());
+            lines.push(companion.map_or_else(
+                || "[2] no epoch within 0.05 s".to_owned(),
+                |s| self.sample_status(s).0,
+            ));
+        }
+        lines
+    }
+    fn fixes(&self) -> Fixes {
+        self.playback.fixes(
+            self.controller.settings.plot,
+            self.data_selected() && self.playback_count() > 0,
+        )
+    }
+    fn follow_epoch(&mut self) {
+        if let Some(s) = self.current_sample() {
+            self.fixes().follow(
+                &mut self.viewport,
+                s.time,
+                std::array::from_fn(|i| s.component(i)),
+            );
+        }
+    }
+    fn playback_controls(&mut self, ui: &mut egui::Ui) {
+        let data = self.data_selected() && self.playback_count() > 0;
+        if ui
+            .add_enabled_ui(data, |ui| {
+                toggle_icon(ui, "Show Track", 3, self.playback.show_track)
+            })
+            .inner
+            .clicked()
+        {
+            self.playback.set_show_track(!self.playback.show_track);
+        }
+        let kind = self.controller.settings.plot;
+        ui.add_enabled_ui(data && self.playback.show_track, |ui| {
+            if kind == 0 {
+                if toggle_icon(ui, "Fix Center", 4, self.playback.fix_center).clicked() {
+                    self.playback.fix_center = !self.playback.fix_center;
+                }
+            } else {
+                if toggle_icon(ui, "Fix Horiz", 5, self.playback.fix_horizontal).clicked() {
+                    self.playback.fix_horizontal = !self.playback.fix_horizontal;
+                    self.playback.horizontal_offset = 0.0;
+                }
+                if kind == 1 && toggle_icon(ui, "Fix Vert", 6, self.playback.fix_vertical).clicked()
+                {
+                    self.playback.fix_vertical = !self.playback.fix_vertical;
+                }
+            }
+        });
+        if data
+            && self.playback.show_track
+            && toggle_icon(ui, "Animate", 7, self.playback.animating).clicked()
+        {
+            self.playback
+                .set_animating(!self.playback.animating, ui.input(|i| i.time));
+        }
+    }
+    fn time_scroll(&mut self, ui: &mut egui::Ui) {
+        let count = self.playback_count();
+        if !self.playback.show_track || count == 0 || !self.data_selected() {
+            return;
+        }
+        // Below the toolbar, as RTKPLOT keeps it in the toolbar panel (`plotmain.dfm:1575-1697`).
+        egui::Panel::top("time scroll").show(ui, |ui| {
+            let slot = self.controller.selection.primary();
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button("◀")
+                    .on_hover_text("Previous epoch")
+                    .clicked()
+                {
+                    self.playback.indices[slot] = self.playback.indices[slot].saturating_sub(1);
+                }
+                let width = (ui.available_width() - 30.0).max(20.0);
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(width, 17.0), egui::Sense::click_and_drag());
+                let thumb_width = 17.0_f32.min(width);
+                let travel = width - thumb_width;
+                let fraction =
+                    self.playback.indices[slot] as f32 / count.saturating_sub(1).max(1) as f32;
+                let thumb = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(fraction * travel, 0.0),
+                    egui::vec2(thumb_width, rect.height()),
+                );
+                let painter = ui.painter();
+                painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+                painter.rect_filled(thumb, 1.0, ui.visuals().widgets.inactive.bg_fill);
+                painter.rect_stroke(
+                    thumb,
+                    1.0,
+                    ui.visuals().widgets.inactive.bg_stroke,
+                    egui::StrokeKind::Inside,
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::slider(
+                        ui.is_enabled(),
+                        self.playback.indices[slot] as f64,
+                        "Time Scroll",
+                    )
+                });
+                if ui.input(|i| i.pointer.primary_pressed())
+                    && response.contains_pointer()
+                    && let Some(pos) = response.interact_pointer_pos()
+                    && thumb.contains(pos)
+                {
+                    self.scroll_drag_offset = Some(pos.x - thumb.left());
+                }
+                if response.dragged()
+                    && let Some(offset) = self.scroll_drag_offset
+                    && let Some(pos) = response.interact_pointer_pos()
+                {
+                    self.playback.indices[slot] =
+                        (((pos.x - rect.left() - offset) / travel.max(1.0)).clamp(0.0, 1.0)
+                            * count.saturating_sub(1) as f32)
+                            .round() as usize;
+                } else if response.clicked()
+                    && let Some(pos) = response.interact_pointer_pos()
+                {
+                    if pos.x < thumb.left() {
+                        self.playback.indices[slot] =
+                            self.playback.indices[slot].saturating_sub(10);
+                    } else if pos.x > thumb.right() {
+                        self.playback.indices[slot] = self.playback.indices[slot]
+                            .saturating_add(10)
+                            .min(count - 1);
+                    }
+                }
+                if !ui.input(|i| i.pointer.primary_down()) {
+                    self.scroll_drag_offset = None;
+                }
+                if ui.small_button("▶").on_hover_text("Next epoch").clicked() {
+                    self.playback.indices[slot] = (self.playback.indices[slot] + 1).min(count - 1);
+                }
+            });
+        });
+        self.sync_selection();
     }
     fn time_extent(&self) -> Option<Range> {
         let data = self
@@ -214,6 +474,7 @@ impl PlotApp {
         };
         if self.options.is_some() || !ui.is_enabled() {
             self.drag = None;
+            self.cursor_drag = false;
             return;
         }
         let (pointer, events) = ui.input(|i| (i.pointer.clone(), i.raw.events.clone()));
@@ -228,6 +489,7 @@ impl PlotApp {
             Area::Outside
         };
         let track = geometry.kind == 0;
+        let fixes = self.fixes();
         let wheel_area = if active_layer {
             geometry.wheel_area(point)
         } else {
@@ -239,6 +501,84 @@ impl PlotApp {
         let moved = events
             .iter()
             .any(|event| matches!(event, egui::Event::PointerMoved(_)));
+        if !ui.ctx().egui_wants_keyboard_input() {
+            for event in &events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if modifiers.alt {
+                        continue;
+                    }
+                    let direction = match key {
+                        egui::Key::ArrowUp => 1,
+                        egui::Key::ArrowDown => 2,
+                        egui::Key::ArrowLeft => 3,
+                        egui::Key::ArrowRight => 4,
+                        _ => continue,
+                    };
+                    let pixels = geometry.frame(if track {
+                        ViewTarget::Track
+                    } else {
+                        ViewTarget::Both(0)
+                    });
+                    let fact = if modifiers.shift { 1.0 } else { 10.0 };
+                    if track {
+                        let mut b = self.viewport.track;
+                        if modifiers.ctrl && direction <= 2 {
+                            let factor = if direction == 1 { 1.0 / 1.05 } else { 1.05 };
+                            b.x = b.x.scaled(b.x.center(), factor, f64::from(pixels.width()));
+                            b.y = b.y.scaled(b.y.center(), factor, f64::from(pixels.height()));
+                        } else if !modifiers.ctrl && !fixes.horizontal {
+                            if direction <= 2 {
+                                b.y = b.y.translated(
+                                    if direction == 1 { fact } else { -fact } * b.y.span()
+                                        / f64::from(pixels.height()),
+                                );
+                            } else {
+                                b.x = b.x.translated(
+                                    if direction == 3 { -fact } else { fact } * b.x.span()
+                                        / f64::from(pixels.width()),
+                                );
+                            }
+                        }
+                        self.viewport.set_bounds(ViewTarget::Track, b);
+                    } else if direction >= 3 {
+                        let r = self.viewport.time;
+                        if modifiers.ctrl {
+                            self.viewport.time = r.scaled(
+                                r.center(),
+                                if direction == 3 { 1.05 } else { 1.0 / 1.05 },
+                                f64::from(pixels.width()),
+                            );
+                        } else if !fixes.horizontal {
+                            self.viewport.time = r.translated(
+                                if direction == 3 { -fact } else { fact } * r.span()
+                                    / f64::from(pixels.width()),
+                            );
+                        }
+                    } else {
+                        for (i, range) in self.viewport.vertical.iter_mut().enumerate() {
+                            if modifiers.ctrl {
+                                *range = range.scaled(
+                                    range.center(),
+                                    if direction == 1 { 1.0 / 1.05 } else { 1.05 },
+                                    f64::from(pixels.height()),
+                                );
+                            } else if i != 0 || !fixes.vertical {
+                                *range = range.translated(
+                                    if direction == 1 { fact } else { -fact } * range.span()
+                                        / f64::from(pixels.height()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for event in events {
             if let egui::Event::MouseWheel { unit, delta, .. } = event
                 && let Some(target) = navigation::wheel_target(track, wheel_area)
@@ -255,6 +595,79 @@ impl PlotApp {
                 });
                 self.viewport.wheel(target, notches, pixels);
             }
+        }
+        if pointer.button_pressed(egui::PointerButton::Primary)
+            && area != Area::Outside
+            && self.playback.show_track
+        {
+            if track && !self.controller.selection.difference {
+                let rect = geometry.frame(ViewTarget::Track);
+                let bounds = self.viewport.track;
+                let slot = self.controller.selection.primary();
+                let radius = (self.controller.settings.options.mark_size / 2 + 2) as f32;
+                let hit = self.controller.all_samples[slot]
+                    .iter()
+                    .filter(|s| self.controller.settings.qualities.visible(s.quality))
+                    .find(|s| {
+                        let pos = egui::pos2(
+                            rect.left()
+                                + ((s.enu[0] - bounds.x.min) / bounds.x.span()) as f32
+                                    * rect.width(),
+                            rect.bottom()
+                                - ((s.enu[1] - bounds.y.min) / bounds.y.span()) as f32
+                                    * rect.height(),
+                        );
+                        pos.distance_sq(point) <= radius * radius
+                    });
+                if let Some(s) = hit {
+                    self.playback.indices[slot] = s.index;
+                    self.sync_selection();
+                    self.drag = None;
+                    return;
+                }
+            } else if !track
+                && !fixes.horizontal
+                && let Some(sample) = self.current_sample()
+                && let Some(frame) = geometry.frames.iter().flatten().next()
+            {
+                // Anywhere on the time cursor line of any panel, within five pixels; RTKPLOT
+                // uses a handle at the top of the first panel only (`plotmain.cpp:1509-1523`).
+                let x = frame.left()
+                    + ((sample.time - self.viewport.time.min) / self.viewport.time.span()) as f32
+                        * frame.width();
+                self.cursor_drag = (point.x - x).abs() < 5.0
+                    && geometry
+                        .frames
+                        .iter()
+                        .flatten()
+                        .any(|f| (f.top()..=f.bottom()).contains(&point.y));
+            }
+        }
+        if self.cursor_drag {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            if let Some(frame) = geometry.frames.iter().flatten().next() {
+                let time = self.viewport.time.min
+                    + f64::from((point.x - frame.left()) / frame.width())
+                        * self.viewport.time.span();
+                let slot = self.controller.selection.primary();
+                if let Some(data) = self.controller.dataset_at(slot) {
+                    self.playback.indices[slot] = data
+                        .points
+                        .partition_point(|p| {
+                            crate::controller::display_time(
+                                p.time,
+                                &self.controller.settings.options,
+                            ) < time
+                        })
+                        .min(data.points.len().saturating_sub(1));
+                }
+                self.sync_selection();
+            }
+            self.drag = None;
+            if !pointer.primary_down() {
+                self.cursor_drag = false;
+            }
+            return;
         }
         for (button, mode) in [
             (egui::PointerButton::Primary, DragMode::Pan),
@@ -280,6 +693,7 @@ impl PlotApp {
                         f64::from(rect.height().max(1.0)),
                     ],
                     button,
+                    horizontal_offset: self.playback.horizontal_offset,
                 });
             }
         }
@@ -289,20 +703,40 @@ impl PlotApp {
                     f64::from(point.x - drag.start.x),
                     f64::from(point.y - drag.start.y),
                 ];
-                let bounds = navigation::drag_bounds(
+                let mut bounds = navigation::drag_bounds(
                     drag.bounds,
                     drag.target,
                     drag.mode,
                     delta,
                     drag.pixels,
                 );
+                if drag.mode == DragMode::Pan {
+                    if track && fixes.horizontal {
+                        bounds = drag.bounds;
+                    } else if !track {
+                        if fixes.horizontal {
+                            bounds.x = drag.bounds.x;
+                            if matches!(drag.target, ViewTarget::Both(_)) {
+                                self.playback.horizontal_offset = (drag.horizontal_offset
+                                    + 2.0 * delta[0] / drag.pixels[0])
+                                    .clamp(-1.0, 1.0);
+                            }
+                        }
+                        if fixes.vertical && geometry.kind == 1 {
+                            bounds.y = drag.bounds.y;
+                        }
+                    }
+                }
                 self.viewport.set_bounds(drag.target, bounds);
             }
             if pointer.button_released(drag.button) || !pointer.button_down(drag.button) {
                 self.drag = None;
             }
         }
-        if pointer.button_double_clicked(egui::PointerButton::Primary) && area != Area::Outside {
+        if pointer.button_double_clicked(egui::PointerButton::Primary)
+            && area != Area::Outside
+            && !fixes.horizontal
+        {
             let rect = geometry.frame(if track {
                 ViewTarget::Track
             } else {
@@ -424,7 +858,7 @@ impl PlotApp {
             }
         });
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
             let before = self.controller.settings.clone();
             combo(ui, "plot type", &mut self.controller.settings.plot, &PLOTS);
             for (button, label) in ["1", "2", "1-2"].iter().enumerate() {
@@ -511,7 +945,11 @@ impl PlotApp {
                     self.controller.settings.qualities.0[q] = !visible;
                 }
             }
+            self.playback_controls(ui);
             if icon_button(ui, "Fit Horizontal", 0).clicked() {
+                if self.controller.settings.plot == 0 {
+                    self.playback.fix_horizontal = false;
+                }
                 self.viewport.fit_horizontal(
                     self.controller.settings.plot,
                     self.time_extent(),
@@ -519,6 +957,7 @@ impl PlotApp {
                 );
             }
             if self.controller.settings.plot != 2 && icon_button(ui, "Fit Vertical", 1).clicked() {
+                self.playback.fix_horizontal = false;
                 self.viewport
                     .fit_range(self.controller.settings.plot, &self.controller.samples);
             }
@@ -572,6 +1011,11 @@ impl PlotApp {
                     }
                 }
                 if before.plot != self.controller.settings.plot {
+                    if self.controller.settings.options.auto_fit
+                        && self.controller.settings.plot <= 1
+                    {
+                        self.playback.fix_horizontal = false;
+                    }
                     self.controller.rebuild();
                     self.viewport.plot_type_changed(
                         self.controller.settings.plot,
@@ -712,6 +1156,12 @@ impl PlotApp {
                             }
                         });
                     ui.end_row();
+                    left_label(ui, "Animation step (epochs/tick)");
+                    ui.add(egui::DragValue::new(&mut draft.anim_cycle));
+                    ui.end_row();
+                    left_label(ui, "Refresh cycle (ms; 0 disables)");
+                    ui.add(egui::DragValue::new(&mut draft.ref_cycle));
+                    ui.end_row();
                     left_label(ui, "Coordinate Origin");
                     combo(ui, "coordinate origin", &mut draft.origin, &ORIGINS);
                     ui.end_row();
@@ -769,13 +1219,22 @@ impl PlotApp {
             .unwrap_or(false)
     }
     fn cursor_status(&self, epoch: Option<(usize, usize)>) -> (String, bool) {
-        let o = &self.controller.settings.options;
         if let Some((source, index)) = epoch
             && let Some(s) = self
                 .controller
                 .samples
                 .iter()
+                .chain(self.controller.all_samples.iter().flatten())
                 .find(|s| (s.source, s.index) == (source, index))
+        {
+            return self.sample_status(s);
+        }
+        self.pointer_status()
+    }
+    /// Status text of one epoch: `[label] time  coordinates or NS/AGE/RATIO  Q=n`.
+    fn sample_status(&self, s: &Sample) -> (String, bool) {
+        let o = &self.controller.settings.options;
+        let (source, index) = (s.source, s.index);
         {
             let label = source_label(source);
             let mut enu = format!("E={:.4} N={:.4} U={:.4} m", s.enu[0], s.enu[1], s.enu[2]);
@@ -805,8 +1264,12 @@ impl PlotApp {
             } else {
                 self.coordinates(&prefix, llh, enu, &suffix)
             };
-            return (format!("{prefix}{values}{suffix}"), both_shown);
+            (format!("{prefix}{values}{suffix}"), both_shown)
         }
+    }
+    /// Status text of the pointer position when it is not on an epoch.
+    fn pointer_status(&self) -> (String, bool) {
+        let o = &self.controller.settings.options;
         if let Some((panel, [x, y])) = self.cursor {
             let text = if self.controller.settings.plot == 0 {
                 // Off the points RTKPLOT shows the cursor's latitude and longitude about the
@@ -889,6 +1352,9 @@ impl PlotApp {
             })
     }
     fn summary(&self) -> String {
+        if self.playback.show_track {
+            return self.current_epoch_lines().join("\n");
+        }
         let c = &self.controller;
         let line = |label, samples: &[Sample], d, override_hz| {
             summary::line(
@@ -1055,6 +1521,9 @@ impl PlotApp {
         let height =
             ((ui.available_height() - 6.0 * panels.len() as f32) / panels.len() as f32).max(50.0);
         self.mouse(ui);
+        if kind != 0 {
+            self.follow_epoch();
+        }
         let canvas = ui.available_rect_before_wrap();
         let mut frames = [None; 3];
         for component in panels {
@@ -1141,8 +1610,11 @@ impl PlotApp {
                 });
         }
         let ctx = ui.ctx().clone();
+        let marks = self.playback_marks();
+        let cursor_time = self.cursor_time();
+        let fixes = self.fixes();
+        let current = self.current_sample();
         let viewport = &mut self.viewport;
-        let selected = self.selected;
         let response = plot.show(ui, |pui| {
             if kind == 0
                 && viewport.resize_track([
@@ -1151,6 +1623,11 @@ impl PlotApp {
                 ])
             {
                 ctx.request_repaint();
+            }
+            if kind == 0
+                && let Some(s) = &current
+            {
+                fixes.follow(viewport, s.time, std::array::from_fn(|i| s.component(i)));
             }
             let bounds = viewport.bounds(if kind == 0 {
                 ViewTarget::Track
@@ -1197,9 +1674,23 @@ impl PlotApp {
                     }
                 }
             }
-            for i in selected_marks(samples, selected) {
+            if kind != 0
+                && let Some(time) = cursor_time
+            {
+                pui.line(
+                    Line::new(
+                        "time cursor",
+                        vec![[time, bounds.y.min], [time, bounds.y.max]],
+                    )
+                    .color(Color32::BLACK),
+                );
+            }
+            for s in &marks {
+                if kind == 1 && s.component(component).is_none() {
+                    continue;
+                }
                 pui.points(
-                    Points::new("selected epoch", vec![values[i]])
+                    Points::new("selected epoch", vec![coordinates(s, kind, component)])
                         .radius((o.mark_size as f32 / 2.0 + 3.0).max(4.0))
                         .filled(false)
                         .color(Color32::BLACK),
@@ -1224,9 +1715,6 @@ impl PlotApp {
             self.hovered = nearest;
             let point = response.transform.value_from_position(pointer);
             self.cursor = Some((component, [point.x, point.y]));
-            if response.response.clicked() {
-                self.selected = nearest;
-            }
         }
         if o.statistics && kind != 2 {
             let mut overlays = Vec::new();
@@ -1286,6 +1774,7 @@ impl PlotApp {
     }
     fn draw(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("plot controls").show(ui, |ui| self.controls(ui));
+        self.time_scroll(ui);
         self.remember_error();
         egui::Panel::bottom("plot status").show(ui, |ui| {
             ui.horizontal_top(|ui| {
@@ -1388,6 +1877,7 @@ impl PlotApp {
         self.hovered = None;
         let previous_cursor = self.cursor;
         self.cursor = None;
+        self.sync_selection();
         egui::CentralPanel::default().show(ui, |ui| self.graphs(ui));
         if previous_hover != self.hovered || previous_cursor != self.cursor {
             ui.ctx().request_repaint();
@@ -1410,13 +1900,68 @@ fn source_label(source: usize) -> &'static str {
     ["1", "2", "1-2"][source]
 }
 fn icon_button(ui: &mut egui::Ui, label: &str, kind: usize) -> egui::Response {
-    let response = ui.add(egui::Button::new("").min_size(egui::vec2(25.0, 22.0)));
+    toggle_icon(ui, label, kind, false)
+}
+fn toggle_icon(ui: &mut egui::Ui, label: &str, kind: usize, selected: bool) -> egui::Response {
+    let response = ui.add(
+        egui::Button::new("")
+            .selected(selected)
+            .min_size(egui::vec2(25.0, 22.0)),
+    );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
     let painter = ui.painter();
     let center = response.rect.center();
     let stroke = egui::Stroke::new(1.2, ui.visuals().text_color());
+    if kind >= 3 {
+        match kind {
+            3 | 4 => {
+                painter.circle_stroke(center, 4.0, stroke);
+                if kind == 4 {
+                    for axis in [egui::vec2(7.0, 0.0), egui::vec2(0.0, 7.0)] {
+                        painter.line_segment([center - axis, center + axis], stroke);
+                    }
+                } else {
+                    painter.circle_filled(center, 1.5, stroke.color);
+                }
+            }
+            5 | 6 => {
+                let axis = if kind == 5 {
+                    egui::vec2(7.0, 0.0)
+                } else {
+                    egui::vec2(0.0, 7.0)
+                };
+                painter.line_segment([center - axis, center + axis], stroke);
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(center, egui::vec2(6.0, 6.0)),
+                    0.0,
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+            }
+            _ => {
+                if selected {
+                    painter.rect_filled(
+                        egui::Rect::from_center_size(center, egui::vec2(8.0, 8.0)),
+                        0.0,
+                        stroke.color,
+                    );
+                } else {
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![
+                            center + egui::vec2(-4.0, -6.0),
+                            center + egui::vec2(-4.0, 6.0),
+                            center + egui::vec2(6.0, 0.0),
+                        ],
+                        stroke.color,
+                        stroke,
+                    ));
+                }
+            }
+        }
+        return response.on_hover_text(label);
+    }
     let axis = if kind == 1 {
         egui::vec2(0.0, 7.0)
     } else {
@@ -1502,22 +2047,23 @@ fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {
 }
 
 /// Indices of the selected epoch and, when it belongs to Data 1, of the Data 2 epoch
-/// within RTKPLOT's 2*DTTOL of its time (`plotdraw.cpp:186,675`). RTKPLOT keeps a separate,
-/// stale Data 2 index; following the Data 1 time keeps the Data 2 mark with the selection.
+/// within RTKPLOT's 2*DTTOL of its time (`plotdraw.cpp:186,675`). RTKPLOT synchronizes
+/// both solution indices in UpdateTime (`plotmain.cpp:2068–2109`), called after a track
+/// pick, cursor drag or animation tick (`plotmain.cpp:1480,1657,1959`).
 fn selected_marks(samples: &[Sample], selected: Option<(usize, usize)>) -> Vec<usize> {
     let Some(i) =
         selected.and_then(|index| samples.iter().position(|s| (s.source, s.index) == index))
     else {
         return vec![];
     };
-    let time = samples[i].time;
+    let time_ns = samples[i].time_ns;
     let companion = (samples[i].source == 0)
         .then(|| {
             samples
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| s.source == 1 && (s.time - time).abs() < 0.05)
-                .min_by(|a, b| (a.1.time - time).abs().total_cmp(&(b.1.time - time).abs()))
+                .filter(|(_, s)| s.source == 1 && (s.time_ns - time_ns).abs() < 50_000_000)
+                .min_by_key(|(_, s)| (s.time_ns - time_ns).abs())
                 .map(|(j, _)| j)
         })
         .flatten();
