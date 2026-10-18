@@ -1279,7 +1279,7 @@ fn playback_buttons_fit_default_width_while_all_controls_are_visible() {
         h.get_by_label("Show Track").click();
         h.run();
         let labels = if kind == 0 {
-            vec!["Map", "Show Track", "Fix Center", "Animate"]
+            vec!["Map", "Show Grid", "Show Track", "Fix Center", "Animate"]
         } else {
             vec!["Show Track", "Fix Horiz", "Fix Vert", "Animate"]
         };
@@ -1874,4 +1874,128 @@ fn snapshot_map_localhost() {
     h.run();
     save(&mut h, "snapshot_plot_map_localhost");
     crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
+}
+
+fn rendered_text(h: &Harness<'_, PlotApp>) -> Vec<(egui::Pos2, String)> {
+    fn collect(shape: &egui::Shape, texts: &mut Vec<(egui::Pos2, String)>) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, texts);
+                }
+            }
+            egui::Shape::Text(text) => texts.push((text.pos, text.galley.text().to_owned())),
+            _ => {}
+        }
+    }
+    let mut texts = vec![];
+    for shape in &h.output().shapes {
+        collect(&shape.shape, &mut texts);
+    }
+    texts
+}
+
+#[test]
+fn tile_url_is_visible_in_options() {
+    let mut h = harness(0);
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_label("Options...").click();
+    h.run();
+    let url = "http://localhost/{z}/{x}/{y}";
+    h.state_mut().options.as_mut().unwrap().tile_url = url.into();
+    h.run();
+    assert!(rendered_text(&h).iter().any(|(_, text)| text == url));
+}
+
+/// The two solid zero grid lines span the frame; trajectory segments do not.
+fn full_frame_grid_lines(h: &Harness<'_, PlotApp>, frame: egui::Rect) -> usize {
+    fn count(shape: &egui::Shape, frame: egui::Rect) -> usize {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().map(|s| count(s, frame)).sum(),
+            egui::Shape::LineSegment {
+                points: [a, b],
+                stroke,
+            } if stroke.color == Color32::from_gray(192)
+                && frame.contains(*a)
+                && frame.contains(*b)
+                && (((a.x - b.x).abs() < 0.01
+                    && ((a.y - b.y).abs() - frame.height()).abs() < 0.01)
+                    || ((a.y - b.y).abs() < 0.01
+                        && ((a.x - b.x).abs() - frame.width()).abs() < 0.01)) =>
+            {
+                1
+            }
+            _ => 0,
+        }
+    }
+    h.output()
+        .shapes
+        .iter()
+        .map(|s| count(&s.shape, frame))
+        .sum()
+}
+
+fn grid_dot_vertices(h: &Harness<'_, PlotApp>, frame: egui::Rect) -> usize {
+    fn count(shape: &egui::Shape, frame: egui::Rect) -> usize {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().map(|s| count(s, frame)).sum(),
+            egui::Shape::Mesh(mesh)
+                if mesh
+                    .vertices
+                    .iter()
+                    .all(|v| v.color == Color32::from_gray(192) && frame.contains(v.pos)) =>
+            {
+                mesh.vertices.len()
+            }
+            _ => 0,
+        }
+    }
+    h.output()
+        .shapes
+        .iter()
+        .map(|s| count(&s.shape, frame))
+        .sum()
+}
+
+#[test]
+fn show_grid_hides_track_grid_preserves_tick_labels_and_leaves_time_grids_on() {
+    let mut h = harness(0);
+    let frame = h.state().geometry.unwrap().frames[0].unwrap();
+    let ticks = |h: &Harness<'_, PlotApp>| {
+        rendered_text(h)
+            .into_iter()
+            .filter(|(pos, text)| {
+                text.parse::<f64>().is_ok()
+                    && ((pos.x < frame.left() && (frame.top()..=frame.bottom()).contains(&pos.y))
+                        || (pos.y > frame.bottom()
+                            && (frame.left()..=frame.right()).contains(&pos.x)))
+            })
+            .collect::<Vec<_>>()
+    };
+    let labels = ticks(&h);
+    assert!(!labels.is_empty());
+    assert!(h.state().controller.settings.show_grid);
+    assert_eq!(full_frame_grid_lines(&h, frame), 2);
+    assert!(grid_dot_vertices(&h, frame) > 0);
+    h.get_by_label("Show Grid").click();
+    h.run();
+    assert!(!h.state().controller.settings.show_grid);
+    assert_eq!(h.state().geometry.unwrap().frames[0].unwrap(), frame);
+    assert_eq!(ticks(&h), labels);
+    assert_eq!(full_frame_grid_lines(&h, frame), 0);
+    assert_eq!(grid_dot_vertices(&h, frame), 0);
+    h.get_by_label("Show Grid").click();
+    h.run();
+    assert!(h.state().controller.settings.show_grid);
+    assert_eq!(full_frame_grid_lines(&h, frame), 2);
+    for kind in [1, 2] {
+        let mut h = harness(kind);
+        h.state_mut().controller.settings.show_grid = false;
+        h.run();
+        assert!(h.query_by_label("Show Grid").is_none());
+        let frame = h.state().geometry.unwrap().frames[0].unwrap();
+        assert!(full_frame_grid_lines(&h, frame) > 0);
+        assert!(grid_dot_vertices(&h, frame) > 0);
+    }
 }

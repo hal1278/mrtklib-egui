@@ -139,6 +139,7 @@ pub(crate) struct Settings {
     pub height: bool,
     pub cursor_llh: bool,
     pub map: bool,
+    pub show_grid: bool,
     pub options: Options,
 }
 impl Default for Settings {
@@ -154,6 +155,7 @@ impl Default for Settings {
             height: false,
             cursor_llh: false,
             map: false,
+            show_grid: true,
             options: Options::default(),
         }
     }
@@ -259,11 +261,13 @@ mod tests {
         assert_eq!(load(&path).unwrap(), Settings::default());
         assert!(Options::default().tile_url.is_empty());
         assert!(Options::default().tile_attribution.is_empty());
+        assert!(Settings::default().show_grid);
         let s = Settings {
             last_file: Some("入力.pos".into()),
             last_file2: Some("比較.pos".into()),
             plot: 2,
             map: true,
+            show_grid: false,
             manual_rates: vec![ManualRate {
                 path: "入力.pos".into(),
                 hz: 1.0,
@@ -289,6 +293,7 @@ mod tests {
         std::fs::write(&path, r#"{"quality":6}"#).unwrap();
         let migrated = load(&path).unwrap();
         assert!(!migrated.map);
+        assert!(migrated.show_grid);
         assert!(migrated.options.tile_url.is_empty());
         assert!(migrated.options.tile_attribution.is_empty());
         assert_eq!(migrated.options.anim_cycle, 10);

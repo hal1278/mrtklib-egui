@@ -107,6 +107,19 @@ fn visible_tiles(origin: [f64; 3], bounds: Bounds, z: u8) -> Result<Vec<Tile>, S
     Ok(tiles)
 }
 
+/// Keep the complete visible working set resident, including on large displays.
+fn working_tiles(origin: [f64; 3], bounds: Bounds, pixels: f64) -> Result<Vec<Tile>, String> {
+    let mut z = zoom(ecef_to_llh(origin)[0], bounds.x.span() / pixels.max(1.0));
+    loop {
+        let tiles = visible_tiles(origin, bounds, z)?;
+        if tiles.len() <= CACHE_SIZE {
+            return Ok(tiles);
+        }
+        // Zoom zero has only one distinct tile, so this always terminates.
+        z -= 1;
+    }
+}
+
 struct Arrival {
     generation: u64,
     tile: Tile,
@@ -118,6 +131,7 @@ pub(crate) struct TileLayer {
     url: String,
     generation: u64,
     cache: VecDeque<(Tile, TextureHandle)>,
+    visible: Option<HashSet<Tile>>,
     failed: HashSet<Tile>,
     pending: HashSet<(u64, Tile)>,
     sender: mpsc::Sender<Arrival>,
@@ -131,6 +145,7 @@ impl Default for TileLayer {
             url: String::new(),
             generation: 0,
             cache: VecDeque::new(),
+            visible: None,
             failed: HashSet::new(),
             pending: HashSet::new(),
             sender,
@@ -143,6 +158,7 @@ impl TileLayer {
     pub fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.cache.clear();
+        self.visible = None;
         self.failed.clear();
         // Keep old requests owned and counted against the concurrency limit.
         // Their results are discarded when they arrive.
@@ -166,10 +182,27 @@ impl TileLayer {
             }
             match arrival.result {
                 Ok(image) => {
+                    // A pan or zoom may have made this in-flight tile obsolete.
+                    if self
+                        .visible
+                        .as_ref()
+                        .is_some_and(|tiles| !tiles.contains(&arrival.tile))
+                    {
+                        continue;
+                    }
                     let texture = ctx.load_texture("map tile", image, egui::TextureOptions::LINEAR);
                     self.cache.push_back((arrival.tile, texture));
                     if self.cache.len() > CACHE_SIZE {
-                        self.cache.pop_front();
+                        let evict = self
+                            .cache
+                            .iter()
+                            .position(|(tile, _)| {
+                                self.visible
+                                    .as_ref()
+                                    .is_none_or(|tiles| !tiles.contains(tile))
+                            })
+                            .expect("visible working set fits the tile cache");
+                        self.cache.remove(evict);
                     }
                 }
                 Err(error) => {
@@ -225,17 +258,18 @@ impl TileLayer {
         bounds: Bounds,
         pixels: f64,
     ) -> Vec<PlotImage> {
-        let z = zoom(ecef_to_llh(origin)[0], bounds.x.span() / pixels.max(1.0));
-        let tiles = match visible_tiles(origin, bounds, z) {
+        let tiles = match working_tiles(origin, bounds, pixels) {
             Ok(tiles) => tiles,
             Err(error) => {
                 if !self.errors.contains(&error) {
                     ctx.request_repaint();
                 }
                 self.error(error);
+                self.visible = Some(HashSet::new());
                 return vec![];
             }
         };
+        self.visible = Some(tiles.iter().copied().collect());
         let mut images = Vec::new();
         for tile in tiles {
             if let Some(index) = self.cache.iter().position(|(t, _)| *t == tile) {
@@ -314,7 +348,22 @@ fn fetch_error(error: ureq::Error) -> String {
         ureq::Error::BadUri(_) | ureq::Error::Http(_) => "invalid tile URL".into(),
         ureq::Error::Io(e) => format!("network I/O: {}", e.kind()),
         ureq::Error::LargeResponseHeader(_, _) => "HTTP response headers exceed limit".into(),
-        other => other.to_string(),
+        ureq::Error::Protocol(_) => "HTTP protocol error".into(),
+        ureq::Error::Timeout(_) => "request timed out".into(),
+        ureq::Error::HostNotFound => "tile server hostname could not be resolved".into(),
+        ureq::Error::RedirectFailed => "HTTP redirect failed".into(),
+        ureq::Error::InvalidProxyUrl => "invalid proxy URL".into(),
+        ureq::Error::ConnectionFailed => "connection failed".into(),
+        ureq::Error::BodyExceedsLimit(_) => "HTTP response body exceeds limit".into(),
+        ureq::Error::TooManyRedirects => "too many HTTP redirects".into(),
+        ureq::Error::Tls(_) | ureq::Error::Rustls(_) => "TLS verification or protocol error".into(),
+        ureq::Error::Pem(_) => "invalid TLS certificate format".into(),
+        ureq::Error::RequireHttpsOnly(_) => "HTTPS required".into(),
+        ureq::Error::ConnectProxyFailed(_) => "proxy CONNECT failed".into(),
+        ureq::Error::TlsRequired => "TLS transport required".into(),
+        ureq::Error::BodyStalled => "HTTP response body stalled".into(),
+        // Error is non-exhaustive. Never format unknown variants or their payloads.
+        _ => "network request failed".into(),
     }
 }
 
@@ -369,6 +418,14 @@ pub(crate) mod tests {
                                     .contains(&format!("user-agent: {USER_AGENT}"))
                             );
                             count.fetch_add(1, Ordering::SeqCst);
+                            if request.contains("/redirect/") {
+                                // Invalid URI with a query credential that userinfo masking
+                                // cannot remove from ureq-proto's BadLocationHeader payload.
+                                write!(socket,
+                                    "HTTP/1.1 302 Found\r\nLocation: http://{}/bad path?api_key=tile-secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                    listener.local_addr().unwrap()).unwrap();
+                                continue;
+                            }
                             let (status, body) = if request.contains("/bad/") {
                                 ("503 Service Unavailable", &[][..])
                             } else if request.contains("/invalid/") {
@@ -561,6 +618,126 @@ pub(crate) mod tests {
         assert_eq!(layer.cache.front().unwrap().0.x, 1);
         assert_eq!(layer.cache.back().unwrap().0.x, CACHE_SIZE as u32);
         assert!(layer.failed.contains(&failed));
+    }
+    #[test]
+    fn stationary_4k_view_fits_cache_and_finishes_requesting() {
+        let server = Server::new();
+        let ctx = egui::Context::default();
+        let mut layer = TileLayer::default();
+        layer.configure(&server.url);
+        let origin = llh_to_ecef([35.0, 139.0, 0.0]);
+        let resolution = std::f64::consts::TAU * 6_378_137.0 * 35.0_f64.to_radians().cos()
+            / (256.0 * f64::from(1_u32 << 14));
+        let half = resolution * 4096.0 / 2.0;
+        let bounds = Bounds {
+            x: Range::new(-half, half),
+            y: Range::new(-half, half),
+        };
+        assert!(visible_tiles(origin, bounds, 14).unwrap().len() > CACHE_SIZE);
+        let expected = working_tiles(origin, bounds, 4096.0).unwrap();
+        assert!(!expected.is_empty() && expected.len() <= CACHE_SIZE);
+        assert!(expected.iter().all(|tile| tile.z < 14));
+
+        // A previous view has already filled the cache with unrelated tiles.
+        for x in 0..CACHE_SIZE as u32 {
+            layer
+                .sender
+                .send(Arrival {
+                    generation: layer.generation,
+                    tile: Tile { z: 18, x, y: 1 },
+                    result: Ok(egui::ColorImage::new([2, 2], vec![egui::Color32::WHITE; 4])),
+                })
+                .unwrap();
+        }
+        layer.poll(&ctx);
+        for _ in 0..=CACHE_SIZE {
+            let images = layer.images(&ctx, origin, bounds, 4096.0);
+            if images.len() == expected.len() {
+                break;
+            }
+            wait(&mut layer, &ctx);
+        }
+        assert_eq!(
+            layer.images(&ctx, origin, bounds, 4096.0).len(),
+            expected.len()
+        );
+        assert!(layer.errors.is_empty());
+        assert!(layer.cache.len() <= CACHE_SIZE);
+        assert_eq!(server.requests.load(Ordering::SeqCst), expected.len());
+        for _ in 0..10 {
+            assert_eq!(
+                layer.images(&ctx, origin, bounds, 4096.0).len(),
+                expected.len()
+            );
+            assert!(layer.pending.is_empty());
+        }
+        assert_eq!(server.requests.load(Ordering::SeqCst), expected.len());
+    }
+    #[test]
+    fn obsolete_arrivals_cannot_evict_the_visible_working_set() {
+        let ctx = egui::Context::default();
+        let mut layer = TileLayer {
+            visible: Some(
+                (0..CACHE_SIZE as u32)
+                    .map(|x| Tile { z: 18, x, y: 1 })
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        for x in 0..=CACHE_SIZE as u32 {
+            layer
+                .sender
+                .send(Arrival {
+                    generation: layer.generation,
+                    tile: Tile { z: 18, x, y: 1 },
+                    result: Ok(egui::ColorImage::new([2, 2], vec![egui::Color32::WHITE; 4])),
+                })
+                .unwrap();
+        }
+        layer.poll(&ctx);
+        assert_eq!(layer.cache.len(), CACHE_SIZE);
+        assert_eq!(layer.cache.front().unwrap().0.x, 0);
+        assert_eq!(layer.cache.back().unwrap().0.x, CACHE_SIZE as u32 - 1);
+    }
+    #[test]
+    fn malformed_redirect_never_exposes_location_query_credentials() {
+        let server = Server::new();
+        let url = server.url.replace("/{z}/{x}/{y}", "/redirect/0/0/0");
+        assert_eq!(fetch(&url).unwrap_err(), "HTTP protocol error");
+        assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn fetch_errors_never_format_untrusted_payloads() {
+        const SECRET: &str = "http://localhost/?api_key=tile-secret";
+        for (error, expected) in [
+            (ureq::Error::BadUri(SECRET.into()), "invalid tile URL"),
+            (
+                ureq::Error::Io(std::io::Error::other(SECRET)),
+                "network I/O: other error",
+            ),
+            (
+                ureq::Error::Tls(SECRET),
+                "TLS verification or protocol error",
+            ),
+            (
+                ureq::Error::Rustls(rustls::Error::General(SECRET.into())),
+                "TLS verification or protocol error",
+            ),
+            (
+                ureq::Error::RequireHttpsOnly(SECRET.into()),
+                "HTTPS required",
+            ),
+            (
+                ureq::Error::ConnectProxyFailed(SECRET.into()),
+                "proxy CONNECT failed",
+            ),
+            (
+                ureq::Error::Other(Box::new(std::io::Error::other(SECRET))),
+                "network request failed",
+            ),
+        ] {
+            assert_eq!(fetch_error(error), expected);
+        }
     }
     #[test]
     fn reset_retains_concurrency_ownership_and_discards_stale_results() {

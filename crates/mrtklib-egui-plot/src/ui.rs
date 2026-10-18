@@ -954,6 +954,9 @@ impl PlotApp {
                 }
             }
             if self.controller.settings.plot == 0 {
+                if toggle_icon(ui, "Show Grid", 8, self.controller.settings.show_grid).clicked() {
+                    self.controller.settings.show_grid = !self.controller.settings.show_grid;
+                }
                 let reason = self.map_disabled_reason();
                 let response = ui.add_enabled(
                     reason.is_none(),
@@ -1198,7 +1201,7 @@ impl PlotApp {
                         ui.end_row();
                     }
                     left_label(ui, "Tile URL ({z}/{x}/{y})");
-                    ui.add(egui::TextEdit::singleline(&mut draft.tile_url).password(true));
+                    ui.add(egui::TextEdit::singleline(&mut draft.tile_url));
                     ui.end_row();
                     left_label(ui, "Tile attribution");
                     ui.text_edit_singleline(&mut draft.tile_attribution);
@@ -1641,6 +1644,7 @@ impl PlotApp {
         let map_origin = (kind == 0 && self.controller.settings.map && !o.tile_url.is_empty())
             .then(|| self.controller.absolute_origin().ok())
             .flatten();
+        let show_grid = kind != 0 || self.controller.settings.show_grid;
         let tiles = &mut self.tiles;
         let viewport = &mut self.viewport;
         let response = plot.show(ui, |pui| {
@@ -1676,7 +1680,9 @@ impl PlotApp {
                     pui.image(image);
                 }
             }
-            pui.add(grid::Grid::new(kind != 0 && !o.week_time));
+            if show_grid {
+                pui.add(grid::Grid::new(kind != 0 && !o.week_time));
+            }
             for source in 0..3 {
                 let start = samples.partition_point(|s| s.source < source);
                 let end = samples.partition_point(|s| s.source <= source);
@@ -2006,6 +2012,24 @@ fn toggle_icon(ui: &mut egui::Ui, label: &str, kind: usize, selected: bool) -> e
                     stroke,
                     egui::StrokeKind::Middle,
                 );
+            }
+            8 => {
+                for offset in [-6.0, 0.0, 6.0] {
+                    painter.line_segment(
+                        [
+                            center + egui::vec2(offset, -6.0),
+                            center + egui::vec2(offset, 6.0),
+                        ],
+                        stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            center + egui::vec2(-6.0, offset),
+                            center + egui::vec2(6.0, offset),
+                        ],
+                        stroke,
+                    );
+                }
             }
             _ => {
                 if selected {
