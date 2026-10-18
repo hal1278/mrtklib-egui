@@ -725,6 +725,17 @@ fn status_coordinates_use_measured_width_and_the_llh_enu_choice() {
 }
 
 #[test]
+fn nsat_panels_follow_the_plot_buttons_and_height_stays_position_only() {
+    let mut h = harness(2);
+    assert!(h.query_by_label("Plot2").is_some());
+    assert!(h.query_by_label("U").is_none() && h.query_by_label("Height").is_none());
+    h.get_by_label("Plot2").click();
+    h.run();
+    let frames = h.state().geometry.unwrap().frames;
+    assert!(frames[0].is_some() && frames[1].is_none() && frames[2].is_some());
+}
+
+#[test]
 fn track_cursor_off_the_points_shows_its_latitude_and_longitude() {
     let mut h = harness(0);
     h.state_mut().hovered = None;
@@ -789,7 +800,7 @@ fn info_indicator_retains_each_dataset_diagnostics_when_window_closes() {
 }
 
 #[test]
-fn component_controls_only_show_for_position_and_height_changes_only_third_range() {
+fn component_controls_only_show_for_time_plots_and_height_changes_only_third_range() {
     let mut h = harness(0);
     assert!(h.query_by_label("Plot1").is_none());
     select(&mut h, "Gnd Trk", "Position");
@@ -821,7 +832,7 @@ fn component_controls_only_show_for_position_and_height_changes_only_third_range
         assert_eq!(s.vertical, s.height);
     }
     select(&mut h, "Position", "NSat");
-    assert!(h.query_by_label("Plot1").is_none());
+    assert!(h.query_by_label("Plot1").is_some());
     assert!(h.query_by_label("Height").is_none());
 }
 

@@ -440,14 +440,17 @@ impl PlotApp {
                     self.controller.toggle(button);
                 }
             }
-            if self.controller.settings.plot == 1 {
+            // RTKPLOT shares the Plot1-3 buttons between the time plots (`BtnOn1-3`).
+            if self.controller.settings.plot != 0 {
                 for i in 0..3 {
                     ui.toggle_value(
                         &mut self.controller.settings.components[i],
                         format!("Plot{}", i + 1),
                     );
                 }
-                if ui
+            }
+            if self.controller.settings.plot == 1
+                && ui
                     .add_sized(
                         [60.0, ui.spacing().interact_size.y],
                         egui::Button::new(if self.controller.settings.height {
@@ -458,9 +461,8 @@ impl PlotApp {
                     )
                     .on_hover_text("Third component: Up / ellipsoidal height")
                     .clicked()
-                {
-                    self.controller.settings.height = !self.controller.settings.height;
-                }
+            {
+                self.controller.settings.height = !self.controller.settings.height;
             }
             if ui
                 .button("All")
@@ -1012,7 +1014,7 @@ impl PlotApp {
             return;
         }
         let kind = self.controller.settings.plot;
-        let enabled = if kind == 1 {
+        let enabled = if kind != 0 {
             self.controller.settings.components
         } else {
             [true; 3]
