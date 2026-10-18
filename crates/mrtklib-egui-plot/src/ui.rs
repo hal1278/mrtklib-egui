@@ -288,6 +288,42 @@ impl PlotApp {
                 .cloned()
         }
     }
+    /// With Show Track, one line per shown dataset for the current epoch, so the status keeps
+    /// the line count of the summaries: Data 2 at the Data 1 time within 2*DTTOL (the mark
+    /// rule), or the matched difference. RTKPLOT shows only the selected solution
+    /// (`plotinfo.cpp:18-23`).
+    fn current_epoch_lines(&self) -> Vec<String> {
+        let Some((_, index)) = self.selected.filter(|_| self.data_selected()) else {
+            return vec![];
+        };
+        let c = &self.controller;
+        if c.selection.difference {
+            let line = data::difference(&c.all_samples[0], &c.all_samples[1], 0)
+                .into_iter()
+                .find(|s| s.index == index)
+                .map_or_else(
+                    || "[1-2] no matched epoch".to_owned(),
+                    |s| self.sample_status(&s).0,
+                );
+            return vec![line];
+        }
+        let primary = c.selection.primary();
+        let Some(current) = c.all_samples[primary].iter().find(|s| s.index == index) else {
+            return vec![];
+        };
+        let mut lines = vec![self.sample_status(current).0];
+        if primary == 0 && c.selection.data[1] {
+            let companion = c.all_samples[1]
+                .iter()
+                .filter(|s| (s.time_ns - current.time_ns).abs() < 50_000_000)
+                .min_by_key(|s| (s.time_ns - current.time_ns).abs());
+            lines.push(companion.map_or_else(
+                || "[2] no epoch within 0.05 s".to_owned(),
+                |s| self.sample_status(s).0,
+            ));
+        }
+        lines
+    }
     fn fixes(&self) -> Fixes {
         self.playback.fixes(
             self.controller.settings.plot,
@@ -1175,7 +1211,6 @@ impl PlotApp {
             .unwrap_or(false)
     }
     fn cursor_status(&self, epoch: Option<(usize, usize)>) -> (String, bool) {
-        let o = &self.controller.settings.options;
         if let Some((source, index)) = epoch
             && let Some(s) = self
                 .controller
@@ -1183,6 +1218,15 @@ impl PlotApp {
                 .iter()
                 .chain(self.controller.all_samples.iter().flatten())
                 .find(|s| (s.source, s.index) == (source, index))
+        {
+            return self.sample_status(s);
+        }
+        self.pointer_status()
+    }
+    /// Status text of one epoch: `[label] time  coordinates or NS/AGE/RATIO  Q=n`.
+    fn sample_status(&self, s: &Sample) -> (String, bool) {
+        let o = &self.controller.settings.options;
+        let (source, index) = (s.source, s.index);
         {
             let label = source_label(source);
             let mut enu = format!("E={:.4} N={:.4} U={:.4} m", s.enu[0], s.enu[1], s.enu[2]);
@@ -1212,8 +1256,12 @@ impl PlotApp {
             } else {
                 self.coordinates(&prefix, llh, enu, &suffix)
             };
-            return (format!("{prefix}{values}{suffix}"), both_shown);
+            (format!("{prefix}{values}{suffix}"), both_shown)
         }
+    }
+    /// Status text of the pointer position when it is not on an epoch.
+    fn pointer_status(&self) -> (String, bool) {
+        let o = &self.controller.settings.options;
         if let Some((panel, [x, y])) = self.cursor {
             let text = if self.controller.settings.plot == 0 {
                 // Off the points RTKPLOT shows the cursor's latitude and longitude about the
@@ -1297,15 +1345,7 @@ impl PlotApp {
     }
     fn summary(&self) -> String {
         if self.playback.show_track {
-            if !self.data_selected() {
-                return String::new();
-            }
-            return self
-                .cursor_status(
-                    self.selected
-                        .map(|(_, i)| (self.controller.selection.primary(), i)),
-                )
-                .0;
+            return self.current_epoch_lines().join("\n");
         }
         let c = &self.controller;
         let line = |label, samples: &[Sample], d, override_hz| {

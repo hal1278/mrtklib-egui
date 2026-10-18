@@ -1351,7 +1351,7 @@ fn difference_uses_data1_clock_and_reference_marker_visibility() {
     h.run();
     assert_eq!(h.state().selected, Some((2, 5)));
     assert_eq!(h.state().playback_marks()[0].source, 2);
-    assert_eq!(h.state().summary(), h.state().cursor_status(Some((0, 5))).0);
+    assert!(h.state().summary().starts_with("[1-2] "));
     select(&mut h, "Gnd Trk", "Position");
     assert!(h.state().playback_marks().is_empty());
     assert!(h.state().cursor_time().is_some());
@@ -1726,4 +1726,58 @@ fn position_fix_vert_follows_the_displayed_difference() {
         .enu[0];
     assert!((s.enu[0] - first).abs() > 1.0);
     assert!((h.state().viewport.vertical[0].center() - s.enu[0]).abs() < 1e-8);
+}
+
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_position_show_track() {
+    let mut c = two_solutions(1);
+    c.selection.data = [true, true];
+    c.rebuild();
+    let mut h = harness_with_controller(c);
+    save(&mut h, "snapshot_plot_position_track_off");
+    h.get_by_label("Show Track").click();
+    h.run();
+    save(&mut h, "snapshot_plot_position_track_on");
+}
+
+#[test]
+fn show_track_status_has_one_current_line_per_shown_dataset() {
+    let mut c = two_solutions(1);
+    c.selection.data = [true, true];
+    c.rebuild();
+    let mut h = harness_with_controller(c);
+    let off = h.state().summary();
+    assert_eq!(off.lines().count(), 2);
+    h.get_by_label("Show Track").click();
+    h.run();
+    let on = h.state().summary();
+    let lines: Vec<_> = on.lines().collect();
+    assert_eq!(lines.len(), 2, "{on}");
+    assert!(
+        lines[0].starts_with("[1] ") && lines[1].starts_with("[2] "),
+        "{on}"
+    );
+    assert!(lines[1].contains("Q=5"), "{on}");
+    // Data 2 without an epoch within 0.05 s of the Data 1 time.
+    let mut far = two_solutions(1);
+    for p in &mut far.dataset2.as_mut().unwrap().points {
+        p.time += 0.5;
+        p.time_ns += 500_000_000;
+    }
+    far.selection.data = [true, true];
+    far.rebuild();
+    let mut h = harness_with_controller(far);
+    h.get_by_label("Show Track").click();
+    h.run();
+    assert!(h.state().summary().ends_with("[2] no epoch within 0.05 s"));
+    // Difference: one matched line.
+    let mut d = two_solutions(1);
+    d.toggle(2);
+    let mut h = harness_with_controller(d);
+    h.get_by_label("Show Track").click();
+    h.run();
+    let diff = h.state().summary();
+    assert_eq!(diff.lines().count(), 1);
+    assert!(diff.starts_with("[1-2] "), "{diff}");
 }
