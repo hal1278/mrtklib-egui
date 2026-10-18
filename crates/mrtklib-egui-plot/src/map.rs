@@ -469,6 +469,8 @@ pub(crate) mod tests {
                 while receive.try_recv().is_err() {
                     match listener.accept() {
                         Ok((mut socket, _)) => {
+                            // Windows sockets inherit the listener's non-blocking mode.
+                            socket.set_nonblocking(false).unwrap();
                             socket
                                 .set_read_timeout(Some(Duration::from_secs(2)))
                                 .unwrap();
@@ -527,7 +529,11 @@ pub(crate) mod tests {
     impl Drop for Server {
         fn drop(&mut self) {
             let _ = self.stop.send(());
-            self.thread.take().unwrap().join().unwrap();
+            let result = self.thread.take().unwrap().join();
+            // A second panic while a failing test unwinds would abort the whole test binary.
+            if !std::thread::panicking() {
+                result.unwrap();
+            }
         }
     }
     pub fn wait(layer: &mut TileLayer, ctx: &egui::Context) {
