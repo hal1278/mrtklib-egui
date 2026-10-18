@@ -1718,7 +1718,7 @@ impl PlotApp {
                             bounds,
                             f64::from(pui.response().rect.width() * ctx.pixels_per_point()),
                         ) {
-                            pui.image(image);
+                            pui.add(image);
                         }
                     }
                     if kind == 0 {
