@@ -2115,13 +2115,15 @@ fn options_layout(h: &Harness<'_, PlotApp>) -> egui::Vec2 {
         let first = label(names[0]);
         let last = label(names.last().unwrap());
         let mut fields = Vec::new();
+        // During the opening sizing pass labels can retain their text height
+        // while fields include padding. Match rows by their vertical extent.
         for (_, rect) in &controls {
             if rect.left() >= starts[i] - tolerance
                 && starts
                     .get(i + 1)
                     .is_none_or(|right| rect.left() < *right - tolerance)
-                && rect.center().y >= first.center().y - tolerance
-                && rect.center().y <= last.center().y + tolerance
+                && rect.center().y >= first.top() - tolerance
+                && rect.center().y <= last.bottom() + tolerance
             {
                 let width = *field_width.get_or_insert(rect.width());
                 assert!(
@@ -2138,7 +2140,11 @@ fn options_layout(h: &Harness<'_, PlotApp>) -> egui::Vec2 {
                 blocks[i] = blocks[i].union(*rect);
             }
         }
-        assert_eq!(fields.len(), names.len());
+        assert_eq!(
+            fields.len(),
+            names.len(),
+            "column {names:?}, labels {first:?}..{last:?}, controls {controls:?}"
+        );
         assert!(
             fields
                 .windows(2)
@@ -2162,9 +2168,7 @@ fn options_layout(h: &Harness<'_, PlotApp>) -> egui::Vec2 {
     assert!(llh.top() >= block.bottom() - tolerance);
     let mut coordinates: Vec<_> = controls
         .iter()
-        .filter(|(role, r)| {
-            *role == Role::SpinButton && (r.center().y - llh.center().y).abs() <= tolerance
-        })
+        .filter(|(role, r)| *role == Role::SpinButton && llh.y_range().contains(r.center().y))
         .map(|(_, r)| *r)
         .collect();
     coordinates.sort_by(|a, b| a.left().total_cmp(&b.left()));
@@ -2263,6 +2267,66 @@ fn options_columns_follow_reference_order_with_map_below() {
         assert_eq!(h.state().controller.settings.options.grid_label_size, 18.5);
         assert_eq!(h.state().controller.settings.options.statistics_size, 24.0);
     }
+}
+
+#[test]
+fn options_uniform_cells_fit_the_first_frame_on_open() {
+    for scale in [1.0, 1.6] {
+        let mut h = harness(0);
+        h.ctx.all_styles_mut(|style| {
+            for font in style.text_styles.values_mut() {
+                font.size *= scale;
+            }
+        });
+        // Open directly, without queued menu events or a settling run, to inspect
+        // exactly the first frame containing the new dialog.
+        let mut draft = h.state().controller.settings.options.clone();
+        draft.origin = 5;
+        draft.llh = [35.123456789, 139.123456789, 1234.5678];
+        h.state_mut().options = Some(draft);
+        let frame = h.ctx.cumulative_frame_nr();
+        h.step();
+        assert_eq!(h.ctx.cumulative_frame_nr(), frame + 1);
+        options_layout(&h);
+    }
+}
+
+#[test]
+fn options_uniform_cells_fit_the_first_frame_after_text_size_changes() {
+    let mut h = options_at_text_scale(1.0);
+    let default = options_layout(&h);
+    let text_styles = h.ctx.global_style().text_styles.clone();
+    for scale in [1.6, 1.0] {
+        h.ctx.all_styles_mut(|style| {
+            style.text_styles = text_styles.clone();
+            for font in style.text_styles.values_mut() {
+                font.size *= scale;
+            }
+        });
+        let frame = h.ctx.cumulative_frame_nr();
+        h.step();
+        assert_eq!(h.ctx.cumulative_frame_nr(), frame + 1);
+        let sizes = options_layout(&h);
+        if scale > 1.0 {
+            assert!(sizes.x > default.x && sizes.y > default.y);
+        } else {
+            assert!((sizes - default).abs().max_elem() <= 1.0 / h.ctx.pixels_per_point());
+        }
+    }
+}
+
+#[test]
+fn options_uniform_cells_fit_the_first_frame_after_number_changes() {
+    let mut h = options_at_text_scale(1.0);
+    let default = options_layout(&h);
+    h.state_mut().options.as_mut().unwrap().y_range = 1_234_567_890_123.125;
+    h.step();
+    let wide = options_layout(&h);
+    assert!(wide.y > default.y);
+    h.state_mut().options.as_mut().unwrap().y_range = 5.0;
+    h.step();
+    let restored = options_layout(&h);
+    assert!((restored - default).abs().max_elem() <= 1.0 / h.ctx.pixels_per_point());
 }
 
 #[test]

@@ -1134,18 +1134,15 @@ impl PlotApp {
                 .y
                 .max(text_height + ui.spacing().button_padding.y * 2.0);
             ui.heading("Options");
-            let widths_id = ui.make_persistent_id("uniform Options cells");
-            let widths = ui
-                .data(|data| data.get_temp::<egui::Vec2>(widths_id))
-                .unwrap_or(egui::Vec2::splat(ui.spacing().interact_size.x));
-            let mut cells = OptionCells {
-                widths,
-                measured: egui::Vec2::ZERO,
-            };
+            let mark_labels: Vec<_> = SIZES.iter().map(u32::to_string).collect();
+            let mark_choices: Vec<_> = mark_labels.iter().map(String::as_str).collect();
+            let cells = OptionCells::measure(ui, draft, &mark_choices);
             let columns: [egui::Rect; 3] = ui
                 .horizontal_top(|ui| {
                     std::array::from_fn(|column| {
                         egui::Grid::new(("plot options column", column))
+                            .min_col_width(cells.row_width(ui))
+                            .min_row_height(ui.spacing().interact_size.y)
                             .show(ui, |ui| match column {
                                 0 => {
                                     cells.row(ui, "Time Format", |ui| {
@@ -1160,7 +1157,7 @@ impl PlotApp {
                                             ui,
                                             "time format",
                                             &mut value,
-                                            &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
+                                            &TIME_FORMATS,
                                         );
                                         draft.week_time = value == 0;
                                         draft.utc = value == 2;
@@ -1172,7 +1169,7 @@ impl PlotApp {
                                             ui,
                                             "lat lon format",
                                             &mut value,
-                                            &["Degrees", "DMS"],
+                                            &LAT_LON_FORMATS,
                                         );
                                         draft.dms = value == 1;
                                         response
@@ -1196,7 +1193,7 @@ impl PlotApp {
                                             ui,
                                             "auto fit",
                                             &mut value,
-                                            &["OFF", "ON"],
+                                            &AUTO_FIT_CHOICES,
                                         );
                                         draft.auto_fit = value == 1;
                                         response
@@ -1219,20 +1216,20 @@ impl PlotApp {
                                             ui,
                                             "plot style",
                                             &mut draft.style,
-                                            &["Mark/Line", "Mark", "Line"],
+                                            &PLOT_STYLES,
                                         )
                                     });
                                     cells.row(ui, "Mark Size", |ui| {
-                                        let labels: Vec<_> =
-                                            SIZES.iter().map(u32::to_string).collect();
-                                        let choices: Vec<_> =
-                                            labels.iter().map(String::as_str).collect();
                                         let mut index = SIZES
                                             .iter()
                                             .position(|size| *size == draft.mark_size)
                                             .expect("validated mark size");
-                                        let response =
-                                            option_combo(ui, "mark size", &mut index, &choices);
+                                        let response = option_combo(
+                                            ui,
+                                            "mark size",
+                                            &mut index,
+                                            &mark_choices,
+                                        );
                                         draft.mark_size = SIZES[index];
                                         response
                                     });
@@ -1309,11 +1306,6 @@ impl PlotApp {
                     }
                 },
             );
-            if cells.measured != widths {
-                ui.data_mut(|data| data.insert_temp(widths_id, cells.measured));
-                ui.ctx()
-                    .request_discard("uniform Options label and field measurements changed");
-            }
             ui.separator();
             ui.heading("Map");
             ui.label("Tile URL ({z}/{x}/{y})");
@@ -2230,75 +2222,151 @@ impl eframe::App for PlotApp {
         }
     }
 }
-/// Share intrinsic label/widget measurements across the three Options grids.
-/// Intrinsic sizes remain independent of allocated cell widths, allowing both
-/// growth and shrinkage when text, values or the shared style change.
+const TIME_FORMATS: [&str; 3] = ["www/ssss", "h:m:s GPST", "h:m:s UTC"];
+const LAT_LON_FORMATS: [&str; 2] = ["Degrees", "DMS"];
+const AUTO_FIT_CHOICES: [&str; 2] = ["OFF", "ON"];
+const PLOT_STYLES: [&str; 3] = ["Mark/Line", "Mark", "Line"];
+
+/// Measure all Options cells before layout, using only this frame's style/text.
 struct OptionCells {
-    widths: egui::Vec2,
-    measured: egui::Vec2,
+    label_width: f32,
+    field_width: f32,
 }
 impl OptionCells {
-    fn label(&mut self, ui: &mut egui::Ui, text: &str) -> egui::Response {
-        let label = ui
-            .allocate_ui_with_layout(
-                egui::vec2(self.widths.x, ui.spacing().interact_size.y),
-                egui::Layout::left_to_right(egui::Align::Center)
-                    .with_main_align(egui::Align::Min)
-                    .with_main_justify(true)
-                    .with_cross_justify(true),
-                |ui| ui.label(text),
-            )
-            .inner;
-        self.measured.x = self
-            .measured
-            .x
-            .max(label.intrinsic_size().expect("label intrinsic size").x);
-        label
+    fn measure(ui: &egui::Ui, draft: &Options, mark_choices: &[&str]) -> Self {
+        let label_width = [
+            "Time Format",
+            "Lat/Lon Format",
+            "Show Statistics",
+            "Grid/Grid Label",
+            "Auto Fit",
+            "Y-Range (± m)",
+            "Coordinate Origin",
+            "Lat/Lon/Hgt",
+            "Plot Style",
+            "Mark Size",
+            "Grid label size",
+            "Statistics size",
+            "Animation step",
+            "Update cycle (ms)",
+        ]
+        .into_iter()
+        .map(|text| option_text_width(ui, text, egui::TextStyle::Body))
+        .fold(ui.spacing().interact_size.x, f32::max);
+        let combo_width = [
+            TIME_FORMATS.as_slice(),
+            LAT_LON_FORMATS.as_slice(),
+            GRID_FORMATS.as_slice(),
+            AUTO_FIT_CHOICES.as_slice(),
+            ORIGINS.as_slice(),
+            PLOT_STYLES.as_slice(),
+            mark_choices,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|text| option_text_width(ui, *text, egui::TextStyle::Button))
+        .fold(0.0, f32::max)
+            + ui.spacing().icon_width
+            + ui.spacing().icon_spacing
+            + ui.spacing().button_padding.x * 2.0;
+        let field_width = [
+            (draft.y_range, Some(0.1), ""),
+            (f64::from(draft.grid_label_size), Some(0.5), " pt"),
+            (f64::from(draft.statistics_size), Some(0.5), " pt"),
+            (f64::from(draft.anim_cycle), None, ""),
+            (f64::from(draft.ref_cycle), None, ""),
+        ]
+        .into_iter()
+        .map(|(value, speed, suffix)| option_number_width(ui, value, speed, suffix))
+        .fold(combo_width.max(ui.spacing().interact_size.x), f32::max);
+        Self {
+            label_width,
+            field_width,
+        }
+    }
+
+    fn row_width(&self, ui: &egui::Ui) -> f32 {
+        self.label_width + ui.spacing().item_spacing.x + self.field_width
+    }
+
+    fn label(&self, ui: &mut egui::Ui, text: &str) -> egui::Response {
+        ui.allocate_ui_with_layout(
+            egui::vec2(self.label_width, ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center)
+                .with_main_align(egui::Align::Min)
+                .with_main_justify(true)
+                .with_cross_justify(true),
+            |ui| ui.label(text),
+        )
+        .inner
     }
 
     fn row(
-        &mut self,
+        &self,
         ui: &mut egui::Ui,
         label: &str,
         field: impl FnOnce(&mut egui::Ui) -> egui::Response,
     ) -> egui::Response {
         let height = ui.spacing().interact_size.y;
-        let label = self.label(ui, label);
-        let field = ui.add_sized(egui::vec2(self.widths.y, height), field);
-        self.measured.y = self.measured.y.max(
-            field
-                .intrinsic_size()
-                .expect("Options widget intrinsic size")
-                .x,
-        );
+        // Grid::advance uses the previous pass's column widths. Group each
+        // label/field pair in one cell so that cache cannot place the field.
+        let response = ui
+            .allocate_ui_with_layout(
+                egui::vec2(self.row_width(ui), height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    let label = self.label(ui, label);
+                    let field = ui.add_sized(egui::vec2(self.field_width, height), field);
+                    label | field
+                },
+            )
+            .inner;
         ui.end_row();
-        label | field
+        response
     }
+}
+
+fn option_text_width(
+    ui: &egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    style: egui::TextStyle,
+) -> f32 {
+    text.into()
+        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
+        .size()
+        .x
+}
+
+fn option_number_width(ui: &egui::Ui, value: f64, speed: Option<f64>, suffix: &str) -> f32 {
+    // Match DragValue's automatic decimal range (egui 0.36.2). Integers fix
+    // the range at zero; Shift-drag can add one decimal to floating fields.
+    let decimals = speed.map_or(0, |speed| {
+        (ui.input(|i| i.aim_radius() as f64) / speed)
+            .log10()
+            .ceil()
+            .clamp(0.0, f64::DIGITS as f64) as usize
+    });
+    let slow = usize::from(speed.is_some() && ui.input(|i| i.modifiers.shift_only()));
+    (0..=slow)
+        .map(|extra| {
+            let min = decimals + extra;
+            let max = min + if speed.is_some() { 2 } else { 0 };
+            let text = ui.style().number_formatter.format(value, min..=max);
+            option_text_width(
+                ui,
+                egui::RichText::new(text).text_style(ui.style().drag_value_text_style.clone()),
+                egui::TextStyle::Button,
+            ) + option_text_width(ui, suffix, egui::TextStyle::Button)
+                + ui.spacing().button_padding.x * 2.0
+        })
+        .fold(ui.spacing().interact_size.x, f32::max)
 }
 
 fn combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) {
     combo_with_width(ui, id, value, items, 0.0);
 }
 fn option_combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) -> egui::Response {
-    let width = items
-        .iter()
-        .map(|text| {
-            ui.painter()
-                .layout_no_wrap(
-                    (*text).into(),
-                    egui::TextStyle::Button.resolve(ui.style()),
-                    Color32::BLACK,
-                )
-                .size()
-                .x
-        })
-        .fold(ui.spacing().interact_size.x, f32::max)
-        + ui.spacing().icon_width
-        + ui.spacing().icon_spacing
-        + ui.spacing().button_padding.x * 2.0;
-    let mut response = combo_with_width(ui, id, value, items, ui.available_width().max(width));
-    response.set_intrinsic_size(egui::vec2(width, response.rect.height()));
-    response
+    combo_with_width(ui, id, value, items, ui.available_width())
 }
 fn combo_with_width(
     ui: &mut egui::Ui,
