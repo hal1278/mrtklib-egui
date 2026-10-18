@@ -1123,131 +1123,96 @@ impl PlotApp {
         let mut ok = false;
         let mut cancel = false;
         egui::Modal::new(egui::Id::new("plot options")).show(ctx, |ui| {
-            ui.spacing_mut().button_padding.x = 4.0;
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            let measure = |text: &str, style: egui::TextStyle| {
-                ui.painter()
-                    .layout_no_wrap(text.into(), style.resolve(ui.style()), Color32::BLACK)
-                    .size()
-                    .x
-                    .ceil()
-            };
-            // Measure the longest labels and every combo choice, not the selected
-            // value. Widths stay fixed while editing and the toolbar stays compact.
-            let labels = ["Show Statistics", "Coordinate Origin", "Update cycle (ms)"];
-            let choices = [
-                vec!["www/ssss", "h:m:s GPST", "h:m:s UTC", "Degrees", "DMS"],
-                ORIGINS.into_iter().chain(GRID_FORMATS).collect(),
-                vec!["Mark/Line", "Mark", "Line", "20"],
-            ];
-            let widths: [[f32; 2]; 3] = std::array::from_fn(|i| {
-                [
-                    measure(labels[i], egui::TextStyle::Body),
-                    (choices[i]
-                        .iter()
-                        .map(|s| measure(s, egui::TextStyle::Button))
-                        .fold(0.0, f32::max)
-                        + ui.spacing().icon_width
-                        + ui.spacing().icon_spacing
-                        + 2.0 * ui.spacing().button_padding.x)
-                        .max(80.0),
-                ]
-            });
-            let map_label_width = measure("Tile URL ({z}/{x}/{y})", egui::TextStyle::Body);
-            let column_widths = widths.map(|[label, field]| label + 3.0 + field);
-            let content_width = column_widths.iter().sum::<f32>() + 2.0 * 8.0;
-            ui.set_width(content_width);
+            let text_height = ui
+                .text_style_height(&egui::TextStyle::Body)
+                .max(ui.text_style_height(&egui::TextStyle::Button))
+                .max(ui.text_style_height(&ui.style().drag_value_text_style));
+            ui.spacing_mut().interact_size.y = ui
+                .spacing()
+                .interact_size
+                .y
+                .max(text_height + ui.spacing().button_padding.y * 2.0);
             ui.heading("Options");
-            let mut middle_label_left = 0.0;
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                for (column, [label_width, field_width]) in widths.into_iter().enumerate() {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(column_widths[column], 0.0),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.set_width(column_widths[column]);
-                            ui.spacing_mut().combo_width = field_width;
-                            ui.spacing_mut().interact_size.x = field_width;
-                            egui::Grid::new(("plot options column", column))
-                                .min_col_width(0.0)
-                                .num_columns(2)
-                                .spacing([3.0, 4.0])
-                                .show(ui, |ui| match column {
-                                    0 => {
-                                        option_label(ui, "Time Format", label_width);
-                                        let mut value = if draft.week_time {
-                                            0
-                                        } else if draft.utc {
-                                            2
-                                        } else {
-                                            1
-                                        };
-                                        option_combo(
-                                            ui,
-                                            "time format",
-                                            &mut value,
-                                            &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
-                                        );
-                                        draft.week_time = value == 0;
-                                        draft.utc = value == 2;
-                                        ui.end_row();
-                                        option_label(ui, "Lat/Lon Format", label_width);
-                                        let mut value = usize::from(draft.dms);
-                                        option_combo(
-                                            ui,
-                                            "lat lon format",
-                                            &mut value,
-                                            &["Degrees", "DMS"],
-                                        );
-                                        draft.dms = value == 1;
-                                        ui.end_row();
-                                        option_label(ui, "Show Statistics", label_width);
-                                        ui.checkbox(&mut draft.statistics, "");
-                                        ui.end_row();
-                                    }
-                                    1 => {
-                                        middle_label_left =
-                                            option_label(ui, "Grid/Grid Label", label_width)
-                                                .rect
-                                                .left();
-                                        option_combo(
-                                            ui,
-                                            "grid format",
-                                            &mut draft.show_g_label,
-                                            &GRID_FORMATS,
-                                        );
-                                        ui.end_row();
-                                        option_label(ui, "Auto Fit", label_width);
-                                        let mut value = usize::from(draft.auto_fit);
-                                        option_combo(ui, "auto fit", &mut value, &["OFF", "ON"]);
-                                        draft.auto_fit = value == 1;
-                                        ui.end_row();
-                                        option_label(ui, "Y-Range (± m)", label_width);
-                                        ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1));
-                                        ui.end_row();
-                                        option_label(ui, "Coordinate Origin", label_width);
-                                        option_combo(
-                                            ui,
-                                            "coordinate origin",
-                                            &mut draft.origin,
-                                            &ORIGINS,
-                                        );
-                                        ui.end_row();
-                                    }
-                                    _ => {
-                                        option_label(ui, "Plot Style", label_width);
-                                        option_combo(
-                                            ui,
-                                            "plot style",
-                                            &mut draft.style,
-                                            &["Mark/Line", "Mark", "Line"],
-                                        );
-                                        ui.end_row();
-                                        option_label(ui, "Mark Size", label_width);
+            let columns: [egui::Rect; 3] = ui
+                .horizontal_top(|ui| {
+                    std::array::from_fn(|column| {
+                        // Grid uses content widths and the shared style's row height
+                        // and spacing; no RTKPLOT pixel coordinates enter the layout.
+                        egui::Grid::new(("plot options column", column))
+                            .show(ui, |ui| match column {
+                                0 => {
+                                    ui.label("Time Format");
+                                    let mut value = if draft.week_time {
+                                        0
+                                    } else if draft.utc {
+                                        2
+                                    } else {
+                                        1
+                                    };
+                                    option_combo(
+                                        ui,
+                                        "time format",
+                                        &mut value,
+                                        &["www/ssss", "h:m:s GPST", "h:m:s UTC"],
+                                    );
+                                    draft.week_time = value == 0;
+                                    draft.utc = value == 2;
+                                    ui.end_row();
+                                    ui.label("Lat/Lon Format");
+                                    let mut value = usize::from(draft.dms);
+                                    option_combo(
+                                        ui,
+                                        "lat lon format",
+                                        &mut value,
+                                        &["Degrees", "DMS"],
+                                    );
+                                    draft.dms = value == 1;
+                                    ui.end_row();
+                                    ui.label("Show Statistics");
+                                    ui.checkbox(&mut draft.statistics, "");
+                                    ui.end_row();
+                                }
+                                1 => {
+                                    ui.label("Grid/Grid Label");
+                                    option_combo(
+                                        ui,
+                                        "grid format",
+                                        &mut draft.show_g_label,
+                                        &GRID_FORMATS,
+                                    );
+                                    ui.end_row();
+                                    ui.label("Auto Fit");
+                                    let mut value = usize::from(draft.auto_fit);
+                                    option_combo(ui, "auto fit", &mut value, &["OFF", "ON"]);
+                                    draft.auto_fit = value == 1;
+                                    ui.end_row();
+                                    ui.label("Y-Range (± m)");
+                                    ui.add(egui::DragValue::new(&mut draft.y_range).speed(0.1));
+                                    ui.end_row();
+                                    ui.label("Coordinate Origin");
+                                    option_combo(
+                                        ui,
+                                        "coordinate origin",
+                                        &mut draft.origin,
+                                        &ORIGINS,
+                                    );
+                                    ui.end_row();
+                                }
+                                _ => {
+                                    ui.label("Plot Style");
+                                    option_combo(
+                                        ui,
+                                        "plot style",
+                                        &mut draft.style,
+                                        &["Mark/Line", "Mark", "Line"],
+                                    );
+                                    ui.end_row();
+                                    ui.label("Mark Size");
+                                    ui.horizontal(|ui| {
                                         egui::ComboBox::from_id_salt("mark size")
-                                            .width(field_width)
-                                            .height(400.0)
+                                            .width(ui.spacing().interact_size.x)
+                                            .height(choice_height(ui, SIZES.len()))
                                             .selected_text(draft.mark_size.to_string())
                                             .show_ui(ui, |ui| {
                                                 for size in SIZES {
@@ -1258,77 +1223,87 @@ impl PlotApp {
                                                     );
                                                 }
                                             });
-                                        ui.end_row();
-                                        for (label, value) in [
-                                            ("Grid label size", &mut draft.grid_label_size),
-                                            ("Statistics size", &mut draft.statistics_size),
-                                        ] {
-                                            option_label(ui, label, label_width);
-                                            ui.add(
-                                                egui::DragValue::new(value)
-                                                    .range(TEXT_SIZE_RANGE)
-                                                    .clamp_existing_to_range(false)
-                                                    .speed(0.5)
-                                                    .suffix(" pt"),
-                                            );
-                                            ui.end_row();
-                                        }
-                                        option_label(ui, "Animation step", label_width)
-                                            .on_hover_text(
-                                                "Epochs per tick; nonpositive values act as one",
-                                            );
-                                        ui.add(egui::DragValue::new(&mut draft.anim_cycle));
-                                        ui.end_row();
-                                        option_label(ui, "Update cycle (ms)", label_width)
-                                            .on_hover_text("Zero disables animation ticks");
-                                        ui.add(egui::DragValue::new(&mut draft.ref_cycle));
+                                    });
+                                    ui.end_row();
+                                    for (label, value) in [
+                                        ("Grid label size", &mut draft.grid_label_size),
+                                        ("Statistics size", &mut draft.statistics_size),
+                                    ] {
+                                        ui.label(label);
+                                        ui.add(
+                                            egui::DragValue::new(value)
+                                                .range(TEXT_SIZE_RANGE)
+                                                .clamp_existing_to_range(false)
+                                                .speed(0.5)
+                                                .suffix(" pt"),
+                                        );
                                         ui.end_row();
                                     }
-                                });
-                        },
-                    );
-                }
-            });
-            // Like RTKPLOT, LLH spans the middle and right columns below their
-            // other rows, leaving enough room for full-precision coordinates.
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
-                ui.add_space(middle_label_left - ui.next_widget_position().x);
-                option_label(ui, "Lat/Lon/Hgt", widths[1][0]);
-                let field_width = (ui.available_width() - 6.0) / 3.0;
-                ui.spacing_mut().interact_size.x = field_width;
-                for (i, label) in ["Latitude (deg)", "Longitude (deg)", "Height (m)"]
-                    .iter()
-                    .enumerate()
-                {
-                    ui.add_enabled(
-                        draft.origin == 5,
-                        egui::DragValue::new(&mut draft.llh[i])
-                            .speed(if i < 2 { 0.000001 } else { 0.1 })
-                            .max_decimals(if i < 2 { 9 } else { 4 }),
-                    )
-                    .on_hover_text(*label);
-                }
-            });
+                                    ui.label("Animation step").on_hover_text(
+                                        "Epochs per tick; nonpositive values act as one",
+                                    );
+                                    ui.add(egui::DragValue::new(&mut draft.anim_cycle));
+                                    ui.end_row();
+                                    ui.label("Update cycle (ms)")
+                                        .on_hover_text("Zero disables animation ticks");
+                                    ui.add(egui::DragValue::new(&mut draft.ref_cycle));
+                                    ui.end_row();
+                                }
+                            })
+                            .response
+                            .rect
+                    })
+                })
+                .inner;
+            let block = columns.into_iter().reduce(egui::Rect::union).unwrap();
+            // The shared LLH row starts at the actual middle label column and
+            // uses the remaining span up to the actual right column's edge.
+            let row_height = ui.spacing().interact_size.y.max(
+                ui.text_style_height(&ui.style().drag_value_text_style)
+                    .max(ui.text_style_height(&egui::TextStyle::Body))
+                    + ui.spacing().button_padding.y * 2.0,
+            );
+            let row = egui::Rect::from_min_size(
+                egui::pos2(columns[1].left(), ui.cursor().top()),
+                egui::vec2(columns[2].right() - columns[1].left(), row_height),
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(row)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                |ui| {
+                    ui.label("Lat/Lon/Hgt");
+                    let count = draft.llh.len();
+                    for (i, label) in ["Latitude (deg)", "Longitude (deg)", "Height (m)"]
+                        .iter()
+                        .enumerate()
+                    {
+                        let remaining = (count - i) as f32;
+                        let width = (ui.available_width()
+                            - ui.spacing().item_spacing.x * (remaining - 1.0))
+                            / remaining;
+                        ui.add_enabled_ui(draft.origin == 5, |ui| {
+                            ui.add_sized(
+                                egui::vec2(width, row_height),
+                                egui::DragValue::new(&mut draft.llh[i])
+                                    .speed(if i < 2 { 0.000001 } else { 0.1 })
+                                    .max_decimals(if i < 2 { 9 } else { 4 }),
+                            )
+                        })
+                        .inner
+                        .on_hover_text(*label);
+                    }
+                },
+            );
             ui.separator();
             ui.heading("Map");
-            egui::Grid::new("plot map options")
-                .num_columns(2)
-                .spacing([3.0, 4.0])
-                .show(ui, |ui| {
-                    option_label(ui, "Tile URL ({z}/{x}/{y})", map_label_width);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut draft.tile_url)
-                            .desired_width(content_width - map_label_width - 3.0),
-                    );
-                    ui.end_row();
-                    option_label(ui, "Tile attribution", map_label_width);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut draft.tile_attribution)
-                            .desired_width(content_width - map_label_width - 3.0),
-                    );
-                    ui.end_row();
-                });
+            ui.label("Tile URL ({z}/{x}/{y})");
+            ui.add(egui::TextEdit::singleline(&mut draft.tile_url).desired_width(block.width()));
+            ui.label("Tile attribution");
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.tile_attribution)
+                    .desired_width(block.width()),
+            );
             if let Some(e) = &self.options_error {
                 ui.colored_label(Color32::RED, mask(e, &[]));
             }
@@ -2240,13 +2215,29 @@ fn combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) {
     combo_with_width(ui, id, value, items, 0.0);
 }
 fn option_combo(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str]) {
-    combo_with_width(ui, id, value, items, ui.spacing().combo_width);
+    let width = items
+        .iter()
+        .map(|text| {
+            ui.painter()
+                .layout_no_wrap(
+                    (*text).into(),
+                    egui::TextStyle::Button.resolve(ui.style()),
+                    Color32::BLACK,
+                )
+                .size()
+                .x
+        })
+        .fold(ui.spacing().interact_size.x, f32::max)
+        + ui.spacing().icon_width
+        + ui.spacing().icon_spacing
+        + ui.spacing().button_padding.x * 2.0;
+    ui.horizontal(|ui| combo_with_width(ui, id, value, items, width));
 }
 fn combo_with_width(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&str], width: f32) {
     egui::ComboBox::from_id_salt(id)
         .selected_text(items[*value])
         .width(width)
-        .height(400.0)
+        .height(choice_height(ui, items.len()))
         .show_ui(ui, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 for (i, label) in items.iter().enumerate() {
@@ -2255,16 +2246,15 @@ fn combo_with_width(ui: &mut egui::Ui, id: &str, value: &mut usize, items: &[&st
             });
         });
 }
-fn option_label(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, 22.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_width(width);
-            ui.label(label)
-        },
-    )
-    .inner
+fn choice_height(ui: &egui::Ui, count: usize) -> f32 {
+    count as f32
+        * (ui
+            .spacing()
+            .interact_size
+            .y
+            .max(ui.text_style_height(&egui::TextStyle::Button))
+            + ui.spacing().item_spacing.y
+            + ui.spacing().button_padding.y * 2.0)
 }
 
 fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {

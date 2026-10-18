@@ -68,13 +68,16 @@ fn snapshot_nsat() {
 #[test]
 #[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
 fn snapshot_options() {
-    let mut h = harness(0);
-    h.get_by_label("Options").click();
-    h.run();
-    h.get_by_label("Options...").click();
-    h.run();
-    save(&mut h, "snapshot_plot_options");
+    for (scale, name) in [
+        (1.0, "snapshot_plot_options"),
+        (1.6, "snapshot_plot_options_large_text"),
+    ] {
+        let mut h = options_at_text_scale(scale);
+        options_layout(&h);
+        save(&mut h, name);
+    }
 }
+
 #[test]
 #[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
 fn snapshot_origin_range_list() {
@@ -2013,55 +2016,41 @@ fn ground_grid_formats_gate_labels_and_drawing_across_resizes() {
 
 #[test]
 fn ground_grid_options_leave_time_plots_unchanged() {
+    let plot_shapes = |h: &Harness<'_, PlotApp>| {
+        let frames = h.state().geometry.unwrap().frames;
+        h.output()
+            .shapes
+            .iter()
+            .filter(|s| frames.iter().flatten().any(|frame| *frame == s.clip_rect))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
     for kind in [1, 2] {
         let mut h = harness(kind);
-        let frame = h.state().geometry.unwrap().frames[0].unwrap();
-        let expected = (
-            full_frame_grid_lines(&h, frame),
-            grid_dot_vertices(&h, frame),
-            rendered_text(&h),
-        );
-        assert!(expected.0 > 0 && expected.1 > 0);
+        let expected = plot_shapes(&h);
+        assert!(!expected.is_empty());
         for format in 0..5 {
             for show in [true, false] {
                 h.state_mut().controller.settings.options.show_g_label = format;
+                h.state_mut().controller.settings.options.grid_label_size = 30.0;
                 h.state_mut().controller.settings.show_grid = show;
                 h.run();
                 assert!(h.query_by_label("Show Grid").is_none());
-                assert_eq!(
-                    (
-                        full_frame_grid_lines(&h, frame),
-                        grid_dot_vertices(&h, frame),
-                        rendered_text(&h)
-                    ),
-                    expected
-                );
+                assert_eq!(plot_shapes(&h), expected);
             }
         }
     }
 }
 
-#[test]
-fn options_columns_follow_reference_order_with_map_below() {
-    let mut h = harness(0);
-    h.get_by_label("Options").click();
-    h.run();
-    h.get_by_label("Options...").click();
-    h.run();
+fn options_layout(h: &Harness<'_, PlotApp>) {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::By;
     let dialog = h
         .ctx
         .memory(|m| m.area_rect(egui::Id::new("plot options")))
         .unwrap();
-    assert!(dialog.width() <= 600.0, "Options too wide: {dialog:?}");
-    let texts = rendered_text(&h);
-    let position = |label: &str| {
-        texts
-            .iter()
-            .rev()
-            .find(|(_, text)| text == label)
-            .unwrap()
-            .0
-    };
+    let tolerance = 1.0 / h.ctx.pixels_per_point();
+    let label = |text: &str| h.get(By::new().role(Role::Label).label(text)).rect();
     let columns = [
         vec!["Time Format", "Lat/Lon Format", "Show Statistics"],
         vec![
@@ -2069,7 +2058,6 @@ fn options_columns_follow_reference_order_with_map_below() {
             "Auto Fit",
             "Y-Range (± m)",
             "Coordinate Origin",
-            "Lat/Lon/Hgt",
         ],
         vec![
             "Plot Style",
@@ -2080,72 +2068,163 @@ fn options_columns_follow_reference_order_with_map_below() {
             "Update cycle (ms)",
         ],
     ];
-    let mut xs = vec![];
-    for labels in columns {
-        let points: Vec<_> = labels.iter().map(|s| position(s)).collect();
-        assert!(points.windows(2).all(|p| p[0].y < p[1].y));
-        assert!(
-            points.iter().all(|p| (p.x - points[0].x).abs() < 1.0),
-            "{points:?}"
-        );
-        assert!(points.iter().all(|p| p.y < position("Map").y));
-        xs.push(points[0].x);
-    }
-    assert!(xs.windows(2).all(|x| x[0] < x[1]));
-    for (column, label, value) in [
-        (0, "Time Format", "h:m:s GPST"),
-        (0, "Lat/Lon Format", "Degrees"),
-        (1, "Grid/Grid Label", "Grid"),
-        (1, "Auto Fit", "ON"),
-        (1, "Coordinate Origin", "Average Pos"),
-        (2, "Plot Style", "Mark/Line"),
-        (2, "Mark Size", "2"),
-    ] {
-        let field = h
-            .get(
-                egui_kittest::kittest::By::new()
-                    .role(egui::accesskit::Role::ComboBox)
-                    .value(value),
+    let controls: Vec<_> = h
+        .query_all(By::new().predicate(|n| {
+            matches!(
+                n.role(),
+                Role::Button | Role::ComboBox | Role::SpinButton | Role::CheckBox | Role::TextInput
             )
-            .rect();
-        let label = position(label);
-        assert!(field.left() > label.x);
-        assert!((field.top()..=field.bottom()).contains(&label.y));
-        assert!(field.right() < xs.get(column + 1).copied().unwrap_or(INITIAL_SIZE[0]));
-    }
-
-    assert!(position("Map").y < position("Tile URL ({z}/{x}/{y})").y);
-    assert!(position("Tile URL ({z}/{x}/{y})").y < position("Tile attribution").y);
-    assert!(position("Tile attribution").y < position("OK").y);
-    let text_fields: Vec<_> = h
-        .get_all(egui_kittest::kittest::By::new().role(egui::accesskit::Role::TextInput))
-        .map(|n| n.rect())
+        }))
+        .map(|n| (n.accesskit_node().role(), n.rect()))
+        .filter(|(_, r)| dialog.contains(r.center()))
         .collect();
-    assert_eq!(text_fields.len(), 2);
-    assert_eq!(text_fields[0].x_range(), text_fields[1].x_range());
-    assert!(
-        text_fields
-            .iter()
-            .all(|r| r.left() > position("Tile URL ({z}/{x}/{y})").x
-                && r.right() <= dialog.right() - 4.0)
+    assert_eq!(
+        controls.len(),
+        20,
+        "all Options controls must be inside the dialog"
     );
-    select(&mut h, "Grid", "Circles/Label");
-    select(&mut h, "Average Pos", "Lat/Lon/Hgt");
-    let draft = h.state_mut().options.as_mut().unwrap();
-    draft.llh = [35.123456789, 139.123456789, 1234.5678];
-    draft.grid_label_size = 18.5;
-    draft.statistics_size = 24.0;
+    let mut widgets = controls.clone();
+    let mut blocks = Vec::new();
+    let mut starts = Vec::new();
+    for names in &columns {
+        let rects: Vec<_> = names.iter().map(|text| label(text)).collect();
+        assert!(
+            rects
+                .windows(2)
+                .all(|r| r[0].bottom() <= r[1].top() + tolerance)
+        );
+        assert!(
+            rects
+                .iter()
+                .all(|r| (r.left() - rects[0].left()).abs() <= tolerance)
+        );
+        starts.push(rects[0].left());
+        widgets.extend(rects.iter().map(|r| (Role::Label, *r)));
+        blocks.push(rects.into_iter().reduce(egui::Rect::union).unwrap());
+    }
+    assert!(starts.windows(2).all(|x| x[0] < x[1]));
+    for (i, names) in columns.iter().enumerate() {
+        let first = label(names[0]);
+        let last = label(names.last().unwrap());
+        for (_, rect) in &controls {
+            if rect.left() >= starts[i] - tolerance
+                && starts
+                    .get(i + 1)
+                    .is_none_or(|right| rect.left() < *right - tolerance)
+                && rect.center().y >= first.center().y - tolerance
+                && rect.center().y <= last.center().y + tolerance
+            {
+                blocks[i] = blocks[i].union(*rect);
+            }
+        }
+    }
+    assert!(
+        blocks
+            .windows(2)
+            .all(|b| b[0].right() <= b[1].left() + tolerance)
+    );
+    let block = blocks.iter().copied().reduce(egui::Rect::union).unwrap();
+    let llh = label("Lat/Lon/Hgt");
+    assert!((llh.left() - starts[1]).abs() <= tolerance);
+    assert!(llh.top() >= block.bottom() - tolerance);
+    let mut coordinates: Vec<_> = controls
+        .iter()
+        .filter(|(role, r)| {
+            *role == Role::SpinButton && (r.center().y - llh.center().y).abs() <= tolerance
+        })
+        .map(|(_, r)| *r)
+        .collect();
+    coordinates.sort_by(|a, b| a.left().total_cmp(&b.left()));
+    assert_eq!(coordinates.len(), 3);
+    assert!(llh.right() <= coordinates[0].left() + tolerance);
+    assert!((coordinates.last().unwrap().right() - blocks[2].right()).abs() <= tolerance);
+    let map = label("Map");
+    assert!(map.top() >= llh.bottom());
+    let fields: Vec<_> = controls
+        .iter()
+        .filter(|(role, _)| *role == Role::TextInput)
+        .map(|(_, r)| *r)
+        .collect();
+    assert_eq!(fields.len(), 2);
+    for field in &fields {
+        assert!((field.left() - block.left()).abs() <= tolerance);
+        assert!((field.right() - block.right()).abs() <= tolerance);
+    }
+    assert!(label("Tile URL ({z}/{x}/{y})").bottom() <= fields[0].top() + tolerance);
+    assert!(fields[0].bottom() <= label("Tile attribution").top() + tolerance);
+    assert!(label("Tile attribution").bottom() <= fields[1].top() + tolerance);
+    widgets.extend(
+        [
+            llh,
+            map,
+            label("Options"),
+            label("Tile URL ({z}/{x}/{y})"),
+            label("Tile attribution"),
+        ]
+        .map(|r| (Role::Label, r)),
+    );
+    for (i, (role, rect)) in widgets.iter().enumerate() {
+        assert!(
+            dialog.expand(tolerance).contains_rect(*rect),
+            "{role:?} {rect:?} clipped by {dialog:?}"
+        );
+        for (other_role, other) in &widgets[i + 1..] {
+            let overlap = rect.intersect(*other);
+            assert!(
+                overlap.width() <= tolerance || overlap.height() <= tolerance,
+                "{role:?} {rect:?} overlaps {other_role:?} {other:?}"
+            );
+        }
+    }
+    // Actual rendered text (including disabled LLH values) also stays inside the
+    // modal's clip, rather than relying only on accessibility widget rectangles.
+    for text in rendered_text_shapes(h) {
+        if !text.galley.text().is_empty() && dialog.contains(text.pos) {
+            assert!(
+                dialog
+                    .expand(tolerance)
+                    .contains_rect(text.visual_bounding_rect()),
+                "text {:?} clipped by dialog",
+                text.galley.text()
+            );
+        }
+    }
+}
+
+fn options_at_text_scale(scale: f32) -> Harness<'static, PlotApp> {
+    let mut h = harness(0);
+    h.ctx.all_styles_mut(|style| {
+        for font in style.text_styles.values_mut() {
+            font.size *= scale;
+        }
+    });
     h.run();
-    let edited_dialog = h
-        .ctx
-        .memory(|m| m.area_rect(egui::Id::new("plot options")))
-        .unwrap();
-    assert_eq!(edited_dialog.width(), dialog.width());
-    h.get_by_label("OK").click();
+    h.get_by_label("Options").click();
     h.run();
-    assert_eq!(h.state().controller.settings.options.show_g_label, 4);
-    assert_eq!(h.state().controller.settings.options.grid_label_size, 18.5);
-    assert_eq!(h.state().controller.settings.options.statistics_size, 24.0);
+    h.get_by_label("Options...").click();
+    h.run();
+    h
+}
+
+#[test]
+fn options_columns_follow_reference_order_with_map_below() {
+    for scale in [1.0, 1.6] {
+        let mut h = options_at_text_scale(scale);
+        options_layout(&h);
+        select(&mut h, "Grid", "Circles/Label");
+        select(&mut h, "Average Pos", "Lat/Lon/Hgt");
+        let draft = h.state_mut().options.as_mut().unwrap();
+        draft.llh = [35.123456789, 139.123456789, 1234.5678];
+        draft.grid_label_size = 18.5;
+        draft.statistics_size = 24.0;
+        h.run();
+        options_layout(&h);
+        h.get_by_label("OK").click();
+        h.run();
+        assert_eq!(h.state().controller.settings.options.show_g_label, 4);
+        assert_eq!(h.state().controller.settings.options.grid_label_size, 18.5);
+        assert_eq!(h.state().controller.settings.options.statistics_size, 24.0);
+    }
 }
 
 #[test]
