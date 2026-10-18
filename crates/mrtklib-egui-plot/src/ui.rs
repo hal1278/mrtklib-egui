@@ -29,6 +29,8 @@ pub(crate) struct PlotApp {
     hovered: Option<(usize, usize)>,
     cursor: Option<(usize, [f64; 2])>,
     status_width: f32,
+    /// Last LLH/ENU fit decision with the width and sample revision it was made for.
+    coordinate_fit: Option<(f32, u64, bool)>,
     status_measure: Option<(egui::Painter, egui::FontId)>,
     info_open: bool,
     errors: Vec<String>,
@@ -128,6 +130,7 @@ impl PlotApp {
             hovered: None,
             cursor: None,
             status_width: INITIAL_SIZE[0],
+            coordinate_fit: None,
             status_measure: None,
             info_open: false,
             errors: Vec::new(),
@@ -757,13 +760,13 @@ impl PlotApp {
     fn epoch_text(&self) -> String {
         self.cursor_status(self.hovered).0
     }
-    /// A quality occurs in a shown dataset (hidden qualities included, so their buttons stay).
+    /// A quality occurs in the shown data (hidden qualities included, so their buttons stay).
     fn present_quality(&self, q: usize) -> bool {
-        let sel = self.controller.selection;
-        (0..2)
-            .filter(|&slot| sel.difference || sel.data[slot])
-            .filter_map(|slot| self.controller.dataset_at(slot))
-            .any(|d| d.points.iter().any(|p| usize::from(p.quality) == q))
+        self.controller
+            .present_qualities
+            .get(q)
+            .copied()
+            .unwrap_or(false)
     }
     fn cursor_status(&self, epoch: Option<(usize, usize)>) -> (String, bool) {
         let o = &self.controller.settings.options;
@@ -808,18 +811,20 @@ impl PlotApp {
             let text = if self.controller.settings.plot == 0 {
                 // Off the points RTKPLOT shows the cursor's latitude and longitude about the
                 // origin (`plotinfo.cpp:388-392`); relative or difference data have no position.
-                let llh = (!self.controller.selection.difference
-                    && self
-                        .controller
-                        .dataset
-                        .as_ref()
-                        .is_some_and(|d| !d.relative))
-                .then(|| self.controller.origin(o).ok())
-                .flatten()
-                .map(|origin| {
-                    let llh = ecef_to_llh(enu_to_ecef([x, y, 0.0], origin.position));
-                    latlon_text(llh, o.dms)
+                // Every shown dataset must be absolute; the origin itself comes from Solution 1.
+                let sel = self.controller.selection;
+                let shown_absolute = (0..2).filter(|&slot| sel.data[slot]).all(|slot| {
+                    self.controller
+                        .dataset_at(slot)
+                        .is_some_and(|d| !d.relative)
                 });
+                let llh = (!sel.difference && sel.data.contains(&true) && shown_absolute)
+                    .then(|| self.controller.origin(o).ok())
+                    .flatten()
+                    .map(|origin| {
+                        let llh = ecef_to_llh(enu_to_ecef([x, y, 0.0], origin.position));
+                        latlon_text(llh, o.dms)
+                    });
                 return self.coordinates("", llh, format!("E={x:.4} N={y:.4} m"), "");
             } else {
                 let (label, unit) = if self.controller.settings.plot == 1 {
@@ -1291,13 +1296,21 @@ impl PlotApp {
                     egui::TextStyle::Body.resolve(ui.style()),
                 ));
                 let (cursor_text, _) = self.cursor_status(self.hovered);
-                // Preserve the width decision while the pointer moves to the status button.
-                // Decide on a representative epoch so the button does not depend on hovering.
-                let representative = self
-                    .hovered
-                    .or(self.selected)
-                    .or_else(|| self.controller.samples.first().map(|s| (s.source, s.index)));
-                let both_shown = self.cursor_status(representative).1;
+                // A hovered epoch decides; otherwise the last decision is kept, so the button
+                // stays while the pointer moves to it. Without one (start, resize, new samples)
+                // the selected or first epoch decides.
+                let key = (self.status_width, self.revision);
+                if self.hovered.is_some() {
+                    let both = self.cursor_status(self.hovered).1;
+                    self.coordinate_fit = Some((key.0, key.1, both));
+                } else if self.coordinate_fit.is_none_or(|(w, r, _)| (w, r) != key) {
+                    let representative = self
+                        .selected
+                        .or_else(|| self.controller.samples.first().map(|s| (s.source, s.index)));
+                    let both = self.cursor_status(representative).1;
+                    self.coordinate_fit = Some((key.0, key.1, both));
+                }
+                let both_shown = self.coordinate_fit.is_some_and(|(_, _, both)| both);
                 ui.allocate_ui_with_layout(
                     egui::vec2(self.status_width, 0.0),
                     egui::Layout::top_down(egui::Align::Min),

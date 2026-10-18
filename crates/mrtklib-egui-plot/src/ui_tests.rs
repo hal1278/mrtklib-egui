@@ -1093,3 +1093,43 @@ fn data2_mark_follows_the_selected_data1_epoch_within_twice_dttol() {
     let first1 = far.samples.iter().find(|s| s.source == 0).unwrap().index;
     assert_eq!(selected_marks(&far.samples, Some((0, first1))).len(), 1);
 }
+
+#[test]
+fn off_point_track_cursor_needs_every_shown_dataset_absolute() {
+    let mut c = two_solutions(0);
+    c.dataset2.as_mut().unwrap().relative = true;
+    c.selection.data = [false, true];
+    c.rebuild();
+    let mut h = harness_with_controller(c);
+    h.state_mut().hovered = None;
+    h.state_mut().cursor = Some((0, [1.0, 2.0]));
+    h.state_mut().status_width = 10000.0;
+    assert!(!h.state().epoch_text().contains("°"));
+    h.state_mut().controller.selection.data = [true, false];
+    assert!(h.state().epoch_text().contains("°"));
+}
+
+#[test]
+fn coordinate_button_decision_is_kept_while_the_pointer_leaves_the_epoch() {
+    let mut h = harness(0);
+    h.run();
+    assert!(h.query_by_label("ENU").is_none());
+    let key = (h.state().status_width, h.state().revision);
+    h.state_mut().hovered = None;
+    h.state_mut().coordinate_fit = Some((key.0, key.1, false));
+    h.run();
+    assert!(h.query_by_label("ENU").is_some());
+}
+
+#[test]
+fn difference_quality_buttons_follow_the_matched_quality() {
+    let mut c = two_solutions(0);
+    for p in &mut c.dataset.as_mut().unwrap().points {
+        p.quality = 1;
+    }
+    c.toggle(2);
+    let h = harness_with_controller(c);
+    assert!(h.state().controller.samples.iter().all(|s| s.quality == 5));
+    assert!(h.query_by_label("FIX").is_none());
+    assert!(h.query_by_label("SINGLE").is_some());
+}

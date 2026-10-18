@@ -48,6 +48,8 @@ pub(crate) struct Controller {
     pub selection: Selection,
     pub all_samples: [Vec<data::Sample>; 2],
     pub samples: Vec<data::Sample>,
+    /// Qualities of the shown samples before the quality filter (difference: matched Q).
+    pub present_qualities: [bool; 8],
     pub error: Option<String>,
     pub file_errors: [Vec<String>; 2],
     pub conversion_errors: [Option<String>; 2],
@@ -88,6 +90,7 @@ impl Controller {
             selection: Selection::default(),
             all_samples: Default::default(),
             samples: vec![],
+            present_qualities: [false; 8],
             error,
             file_errors: Default::default(),
             conversion_errors: Default::default(),
@@ -340,6 +343,12 @@ impl Controller {
                 .cloned()
                 .collect();
         }
+        self.present_qualities = [false; 8];
+        for s in &self.samples {
+            if let Some(present) = self.present_qualities.get_mut(usize::from(s.quality)) {
+                *present = true;
+            }
+        }
         self.samples
             .retain(|s| self.settings.qualities.visible(s.quality));
         // Plot coordinates are display times, so UTC ticks fall on round UTC times.
@@ -363,6 +372,7 @@ impl Controller {
         self.dataset = None;
         self.dataset2 = None;
         self.samples.clear();
+        self.present_qualities = [false; 8];
         self.all_samples = Default::default();
         self.file_errors = Default::default();
         self.conversion_errors = Default::default();
@@ -394,6 +404,7 @@ impl Controller {
             selection: Selection::default(),
             all_samples: Default::default(),
             samples: vec![],
+            present_qualities: [false; 8],
             error: None,
             file_errors: Default::default(),
             conversion_errors: Default::default(),
