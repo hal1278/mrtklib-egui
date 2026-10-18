@@ -22,12 +22,21 @@ pub fn run_with_context<A: eframe::App + 'static>(
     inner_size: [f32; 2],
     make_app: impl FnOnce(&egui::Context) -> A + 'static,
 ) -> eframe::Result {
-    let options = eframe::NativeOptions {
+    #[cfg_attr(not(windows), expect(unused_mut))]
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(title)
             .with_inner_size(inner_size),
         ..Default::default()
     };
+    // wgpu enumerates every enabled backend at startup, and an Intel Vulkan driver crashed
+    // the process there; DX12 is part of every supported Windows (see docs/design.md).
+    // `WGPU_BACKEND` still overrides it.
+    #[cfg(windows)]
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        setup.instance_descriptor.backends =
+            eframe::wgpu::Backends::from_env().unwrap_or(eframe::wgpu::Backends::DX12);
+    }
     eframe::run_native(
         title,
         options,
