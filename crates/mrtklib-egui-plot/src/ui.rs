@@ -630,10 +630,17 @@ impl PlotApp {
                 && let Some(sample) = self.current_sample()
                 && let Some(frame) = geometry.frames.iter().flatten().next()
             {
+                // Anywhere on the time cursor line of any panel, within five pixels; RTKPLOT
+                // uses a handle at the top of the first panel only (`plotmain.cpp:1509-1523`).
                 let x = frame.left()
                     + ((sample.time - self.viewport.time.min) / self.viewport.time.span()) as f32
                         * frame.width();
-                self.cursor_drag = point.distance_sq(egui::pos2(x, frame.top())) < 25.0;
+                self.cursor_drag = (point.x - x).abs() < 5.0
+                    && geometry
+                        .frames
+                        .iter()
+                        .flatten()
+                        .any(|f| (f.top()..=f.bottom()).contains(&point.y));
             }
         }
         if self.cursor_drag {
@@ -1606,13 +1613,6 @@ impl PlotApp {
         let marks = self.playback_marks();
         let cursor_time = self.cursor_time();
         let fixes = self.fixes();
-        let first_panel = self
-            .controller
-            .settings
-            .components
-            .iter()
-            .position(|on| *on)
-            .unwrap_or(0);
         let current = self.current_sample();
         let viewport = &mut self.viewport;
         let response = plot.show(ui, |pui| {
@@ -1684,14 +1684,6 @@ impl PlotApp {
                     )
                     .color(Color32::BLACK),
                 );
-                if component == first_panel {
-                    pui.points(
-                        Points::new("time cursor handle", vec![[time, bounds.y.max]])
-                            .radius(if fixes.horizontal { 2.5 } else { 4.5 })
-                            .filled(fixes.horizontal)
-                            .color(Color32::BLACK),
-                    );
-                }
             }
             for s in &marks {
                 if kind == 1 && s.component(component).is_none() {

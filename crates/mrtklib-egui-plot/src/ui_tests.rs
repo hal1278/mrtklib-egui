@@ -1781,3 +1781,25 @@ fn show_track_status_has_one_current_line_per_shown_dataset() {
     assert_eq!(diff.lines().count(), 1);
     assert!(diff.starts_with("[1-2] "), "{diff}");
 }
+
+#[test]
+fn time_cursor_line_drags_from_any_panel_without_a_handle() {
+    let mut h = harness(1);
+    h.get_by_label("Show Track").click();
+    h.run();
+    h.state_mut().playback.indices[0] = 5;
+    h.run();
+    let s = h.state().current_sample().unwrap();
+    let frame = h.state().geometry.unwrap().frames[1].unwrap();
+    let r = h.state().viewport.time;
+    let x = frame.left() + ((s.time - r.min) / r.span()) as f32 * frame.width();
+    let target = h.state().controller.all_samples[0][8].time - 0.25;
+    let end_x = frame.left() + ((target - r.min) / r.span()) as f32 * frame.width();
+    drag(
+        &mut h,
+        egui::pos2(x, frame.center().y),
+        egui::vec2(end_x - x, 0.0),
+        egui::PointerButton::Primary,
+    );
+    assert_eq!(h.state().selected, Some((0, 8)));
+}
