@@ -1262,11 +1262,10 @@ impl PlotApp {
                     }
                     text
                 } else {
-                    let s = statistics(&enu.iter().map(|p| p[component]).collect::<Vec<_>>());
-                    format!(
-                        "[{label}] AVE={:.4}  STD={:.4}  RMS={:.4} m",
-                        s.average, s.std, s.rms
-                    )
+                    let values: Vec<_> = enu.iter().map(|p| p[component]).collect();
+                    // The absolute height has no zero reference (the difference dH has one).
+                    let absolute = component == 2 && self.controller.settings.height && source != 2;
+                    component_statistics(label, &values, !absolute)
                 };
                 overlays.push(overlay);
             }
@@ -1491,6 +1490,18 @@ fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {
     }
 }
 
+/// RTKPLOT's time-plot statistics (`DrawSolStat`); RMS is about zero.
+fn component_statistics(label: &str, values: &[f64], rms: bool) -> String {
+    let s = statistics(values);
+    if rms {
+        format!(
+            "[{label}] AVE={:.4}  STD={:.4}  RMS={:.4} m",
+            s.average, s.std, s.rms
+        )
+    } else {
+        format!("[{label}] AVE={:.4}  STD={:.4} m", s.average, s.std)
+    }
+}
 fn llh_text(llh: [f64; 3], dms: bool) -> String {
     format!("{} H={:.4} m", latlon_text(llh, dms), llh[2])
 }

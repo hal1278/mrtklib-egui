@@ -1054,3 +1054,15 @@ fn hidden_dataset_origin_error_is_reported_without_removing_the_visible_dataset(
     assert!(h.query_by_label("⚠ 1").is_none());
     assert!(!h.state().controller.samples.is_empty());
 }
+
+#[test]
+fn absolute_height_statistics_omit_rms_about_zero() {
+    assert_eq!(
+        component_statistics("1", &[1.0, 3.0], true),
+        "[1] AVE=2.0000  STD=1.4142  RMS=2.2361 m"
+    );
+    assert_eq!(
+        component_statistics("1", &[1.0, 3.0], false),
+        "[1] AVE=2.0000  STD=1.4142 m"
+    );
+}
