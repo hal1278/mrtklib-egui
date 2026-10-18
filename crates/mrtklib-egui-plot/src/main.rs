@@ -2,6 +2,7 @@
 mod controller;
 mod data;
 mod grid;
+mod map;
 mod navigation;
 mod playback;
 mod reader;

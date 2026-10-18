@@ -15,6 +15,8 @@ The steps below build the applications from source on Linux, for developers. The
 
 Plot runs without `mrtk`: build/run `mrtklib-egui-plot`, then use File → Open Solution-1/2. Data 1 and Data 2 toggle either dataset or both; Data 1-2 shows their matched difference. A dropped solution file targets Solution-2 when Data 2 alone is selected, otherwise Solution-1. Reload and Clear cover both files. GUI settings use the same settings-directory override described below.
 
+In Plot Options, configure a tile URL template containing `{z}`, `{x}` and `{y}`, plus attribution text, then enable Map on Gnd Trk for absolute solution data. Both fields default to empty. Supply your own tile server and follow its terms of use, including attribution; tiles are cached in memory only.
+
 Windows is not supported yet: `mrtk run` needs the MRTKLIB Windows port first.
 
 ## Build `mrtk`

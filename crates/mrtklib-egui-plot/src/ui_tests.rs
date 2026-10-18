@@ -68,13 +68,16 @@ fn snapshot_nsat() {
 #[test]
 #[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
 fn snapshot_options() {
-    let mut h = harness(0);
-    h.get_by_label("Options").click();
-    h.run();
-    h.get_by_label("Options...").click();
-    h.run();
-    save(&mut h, "snapshot_plot_options");
+    for (scale, name) in [
+        (1.0, "snapshot_plot_options"),
+        (1.6, "snapshot_plot_options_large_text"),
+    ] {
+        let mut h = options_at_text_scale(scale);
+        options_layout(&h);
+        save(&mut h, name);
+    }
 }
+
 #[test]
 #[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
 fn snapshot_origin_range_list() {
@@ -151,7 +154,12 @@ fn select(h: &mut Harness<'_, PlotApp>, current: &str, next: &str) {
     )
     .click();
     h.run();
-    h.get_by_label(next).click();
+    h.get(
+        egui_kittest::kittest::By::new()
+            .role(egui::accesskit::Role::Button)
+            .label(next),
+    )
+    .click();
     h.run();
 }
 #[test]
@@ -1274,23 +1282,26 @@ fn track_click_selects_primary_first_hit_only_with_show_track() {
 }
 #[test]
 fn playback_buttons_fit_default_width_while_all_controls_are_visible() {
-    let mut h = harness(1);
-    h.get_by_label("Show Track").click();
-    h.run();
-    for label in [
-        "Show Track",
-        "Fix Horiz",
-        "Fix Vert",
-        "Animate",
-        "Fit Horizontal",
-        "Fit Vertical",
-        "Center Origin",
-        "5m...",
-    ] {
-        let r = h.get_by_label(label).rect();
-        assert!(r.right() <= INITIAL_SIZE[0], "{label}: {r:?}");
+    for kind in [0, 1] {
+        let mut h = harness(kind);
+        h.get_by_label("Show Track").click();
+        h.run();
+        let labels = if kind == 0 {
+            vec!["Map", "Show Grid", "Show Track", "Fix Center", "Animate"]
+        } else {
+            vec!["Show Track", "Fix Horiz", "Fix Vert", "Animate"]
+        };
+        for label in
+            labels
+                .into_iter()
+                .chain(["Fit Horizontal", "Fit Vertical", "Center Origin", "5m..."])
+        {
+            let r = h.get_by_label(label).rect();
+            assert!(r.right() <= INITIAL_SIZE[0], "{label}: {r:?}");
+        }
     }
 }
+
 #[test]
 #[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
 fn snapshot_playback() {
@@ -1802,4 +1813,637 @@ fn time_cursor_line_drags_from_any_panel_without_a_handle() {
         egui::PointerButton::Primary,
     );
     assert_eq!(h.state().selected, Some((0, 8)));
+}
+
+#[test]
+fn map_requires_url_absolute_data_and_valid_origin() {
+    let mut h = harness(0);
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    assert!(h.state().map_disabled_reason().unwrap().contains("Options"));
+    h.state_mut().controller.settings.options.tile_url = "http://localhost/{z}/{x}/{y}".into();
+    h.run();
+    assert!(!h.get_by_label("Map").accesskit_node().is_disabled());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = true;
+    h.run();
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = false;
+    h.state_mut().controller.selection.difference = true;
+    h.run();
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    h.state_mut().controller.selection.difference = false;
+    h.state_mut().controller.settings.options.origin = 4;
+    h.state_mut().controller.dataset.as_mut().unwrap().base = None;
+    h.run();
+    assert!(h.get_by_label("Map").accesskit_node().is_disabled());
+    for kind in [1, 2] {
+        let h = harness(kind);
+        assert!(h.query_by_label("Map").is_none());
+    }
+}
+
+#[test]
+fn map_draws_attribution_only_when_enabled_and_retains_preference() {
+    let server = crate::map::tests::Server::new();
+    let mut c = Controller::fixture(crate::reader::synthetic());
+    c.settings.options.tile_url = server.url.clone();
+    c.settings.options.tile_attribution = "Local test attribution".into();
+    let mut h = harness_with_controller(c);
+    assert!(h.query_by_label("Local test attribution").is_none());
+    h.get_by_label("Map").click();
+    h.run();
+    assert!(h.state().controller.settings.map);
+    assert!(h.query_by_label("Local test attribution").is_some());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = true;
+    h.run();
+    assert!(h.state().controller.settings.map);
+    assert!(h.query_by_label("Local test attribution").is_none());
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = false;
+    h.run();
+    assert!(h.query_by_label("Local test attribution").is_some());
+    h.get_by_label("Map").click();
+    h.run();
+    assert!(h.query_by_label("Local test attribution").is_none());
+    // Let the owned requests finish before stopping the local server.
+    let ctx = h.ctx.clone();
+    crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
+}
+
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_map_localhost() {
+    let server = crate::map::tests::Server::new();
+    let mut c = Controller::fixture(crate::reader::synthetic());
+    c.settings.options.tile_url = server.url.clone();
+    c.settings.options.tile_attribution = "Local test attribution".into();
+    c.settings.map = true;
+    let mut h = harness_with_controller(c);
+    let ctx = h.ctx.clone();
+    crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
+    h.run();
+    save(&mut h, "snapshot_plot_map_localhost");
+    crate::map::tests::wait(&mut h.state_mut().tiles, &ctx);
+}
+
+fn rendered_text_shapes<'a>(h: &'a Harness<'_, PlotApp>) -> Vec<&'a egui::epaint::TextShape> {
+    fn collect<'a>(shape: &'a egui::Shape, texts: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, texts);
+                }
+            }
+            egui::Shape::Text(text) => texts.push(text),
+            _ => {}
+        }
+    }
+    let mut texts = vec![];
+    for shape in &h.output().shapes {
+        collect(&shape.shape, &mut texts);
+    }
+    texts
+}
+fn rendered_text(h: &Harness<'_, PlotApp>) -> Vec<(egui::Pos2, String)> {
+    rendered_text_shapes(h)
+        .into_iter()
+        .map(|t| (t.pos, t.galley.text().to_owned()))
+        .collect()
+}
+
+#[test]
+fn tile_url_is_visible_in_options() {
+    let mut h = harness(0);
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_label("Options...").click();
+    h.run();
+    let url = "http://localhost/{z}/{x}/{y}";
+    h.state_mut().options.as_mut().unwrap().tile_url = url.into();
+    h.run();
+    assert!(rendered_text(&h).iter().any(|(_, text)| text == url));
+}
+
+/// The two solid zero grid lines span the frame; trajectory segments do not.
+fn full_frame_grid_lines(h: &Harness<'_, PlotApp>, frame: egui::Rect) -> usize {
+    fn count(shape: &egui::Shape, frame: egui::Rect) -> usize {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().map(|s| count(s, frame)).sum(),
+            egui::Shape::LineSegment {
+                points: [a, b],
+                stroke,
+            } if stroke.color == Color32::from_gray(192)
+                && frame.contains(*a)
+                && frame.contains(*b)
+                && (((a.x - b.x).abs() < 0.01
+                    && ((a.y - b.y).abs() - frame.height()).abs() < 0.01)
+                    || ((a.y - b.y).abs() < 0.01
+                        && ((a.x - b.x).abs() - frame.width()).abs() < 0.01)) =>
+            {
+                1
+            }
+            _ => 0,
+        }
+    }
+    h.output()
+        .shapes
+        .iter()
+        .map(|s| count(&s.shape, frame))
+        .sum()
+}
+
+fn grid_dot_vertices(h: &Harness<'_, PlotApp>, frame: egui::Rect) -> usize {
+    fn count(shape: &egui::Shape, frame: egui::Rect) -> usize {
+        match shape {
+            egui::Shape::Vec(shapes) => shapes.iter().map(|s| count(s, frame)).sum(),
+            egui::Shape::Mesh(mesh)
+                if mesh
+                    .vertices
+                    .iter()
+                    .all(|v| v.color == Color32::from_gray(192) && frame.contains(v.pos)) =>
+            {
+                mesh.vertices.len()
+            }
+            _ => 0,
+        }
+    }
+    h.output()
+        .shapes
+        .iter()
+        .map(|s| count(&s.shape, frame))
+        .sum()
+}
+
+#[test]
+fn ground_grid_formats_gate_labels_and_drawing_across_resizes() {
+    for format in 0..5 {
+        let mut h = harness(0);
+        h.state_mut().controller.settings.options.show_g_label = format;
+        for size in [egui::vec2(1000.0, 760.0), egui::vec2(820.0, 680.0)] {
+            h.set_size(size);
+            for show in [true, false] {
+                h.state_mut().controller.settings.show_grid = show;
+                h.run();
+                let frame = h.state().geometry.unwrap().frames[0].unwrap();
+                let labels: Vec<_> = rendered_text(&h)
+                    .into_iter()
+                    .filter(|(pos, text)| {
+                        pos.y >= frame.top() - 20.0 && text.parse::<f64>().is_ok()
+                    })
+                    .collect();
+                assert_eq!(
+                    !labels.is_empty(),
+                    show && (format == 2 || format == 4),
+                    "format {format}, show {show}"
+                );
+                // Plot item labels are clipped to the frame, including labels
+                // whose anchors lie on its edge. No native outside ticks remain.
+                for shape in &h.output().shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text().parse::<f64>().is_ok()
+                        && text.pos.y >= frame.top() - 20.0
+                    {
+                        assert_eq!(shape.clip_rect, frame);
+                    }
+                }
+                assert_eq!(grid_dot_vertices(&h, frame) > 0, show && format > 0);
+                assert_eq!(
+                    full_frame_grid_lines(&h, frame),
+                    if show && format > 0 { 2 } else { 0 }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ground_grid_options_leave_time_plots_unchanged() {
+    let plot_shapes = |h: &Harness<'_, PlotApp>| {
+        let frames = h.state().geometry.unwrap().frames;
+        h.output()
+            .shapes
+            .iter()
+            .filter(|s| frames.iter().flatten().any(|frame| *frame == s.clip_rect))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for kind in [1, 2] {
+        let mut h = harness(kind);
+        let expected = plot_shapes(&h);
+        assert!(!expected.is_empty());
+        for format in 0..5 {
+            for show in [true, false] {
+                h.state_mut().controller.settings.options.show_g_label = format;
+                h.state_mut().controller.settings.options.grid_label_size = 30.0;
+                h.state_mut().controller.settings.show_grid = show;
+                h.run();
+                assert!(h.query_by_label("Show Grid").is_none());
+                assert_eq!(plot_shapes(&h), expected);
+            }
+        }
+    }
+}
+
+fn options_layout(h: &Harness<'_, PlotApp>) -> egui::Vec2 {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::By;
+    let dialog = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::new("plot options")))
+        .unwrap();
+    let tolerance = 1.0 / h.ctx.pixels_per_point();
+    let label = |text: &str| h.get(By::new().role(Role::Label).label(text)).rect();
+    let columns = [
+        vec!["Time Format", "Lat/Lon Format", "Show Statistics"],
+        vec![
+            "Grid/Grid Label",
+            "Auto Fit",
+            "Y-Range (± m)",
+            "Coordinate Origin",
+        ],
+        vec![
+            "Plot Style",
+            "Mark Size",
+            "Grid label size",
+            "Statistics size",
+            "Animation step",
+            "Update cycle (ms)",
+        ],
+    ];
+    let controls: Vec<_> = h
+        .query_all(By::new().predicate(|n| {
+            matches!(
+                n.role(),
+                Role::Button | Role::ComboBox | Role::SpinButton | Role::CheckBox | Role::TextInput
+            )
+        }))
+        .map(|n| (n.accesskit_node().role(), n.rect()))
+        .filter(|(_, r)| dialog.contains(r.center()))
+        .collect();
+    assert_eq!(
+        controls.len(),
+        20,
+        "all Options controls must be inside the dialog"
+    );
+    let mut widgets = controls.clone();
+    let mut blocks = Vec::new();
+    let mut starts = Vec::new();
+    let label_width = label(columns[0][0]).width();
+    let mut field_width = None;
+    for names in &columns {
+        let rects: Vec<_> = names.iter().map(|text| label(text)).collect();
+        for rect in &rects {
+            assert!(
+                (rect.width() - label_width).abs() <= tolerance,
+                "label cells must have one measured width across all three columns"
+            );
+        }
+        assert!(
+            rects
+                .windows(2)
+                .all(|r| r[0].bottom() <= r[1].top() + tolerance)
+        );
+        assert!(
+            rects
+                .iter()
+                .all(|r| (r.left() - rects[0].left()).abs() <= tolerance)
+        );
+        starts.push(rects[0].left());
+        widgets.extend(rects.iter().map(|r| (Role::Label, *r)));
+        blocks.push(rects.into_iter().reduce(egui::Rect::union).unwrap());
+    }
+    assert!(starts.windows(2).all(|x| x[0] < x[1]));
+    for (i, names) in columns.iter().enumerate() {
+        let first = label(names[0]);
+        let last = label(names.last().unwrap());
+        let mut fields = Vec::new();
+        // During the opening sizing pass labels can retain their text height
+        // while fields include padding. Match rows by their vertical extent.
+        for (_, rect) in &controls {
+            if rect.left() >= starts[i] - tolerance
+                && starts
+                    .get(i + 1)
+                    .is_none_or(|right| rect.left() < *right - tolerance)
+                && rect.center().y >= first.top() - tolerance
+                && rect.center().y <= last.bottom() + tolerance
+            {
+                let width = *field_width.get_or_insert(rect.width());
+                assert!(
+                    (rect.width() - width).abs() <= tolerance,
+                    "field cells must have one measured width across all three columns"
+                );
+                assert!(
+                    (rect.left() - first.right() - h.ctx.global_style().spacing.item_spacing.x)
+                        .abs()
+                        <= tolerance,
+                    "fields must align immediately after the uniform label cells"
+                );
+                fields.push(*rect);
+                blocks[i] = blocks[i].union(*rect);
+            }
+        }
+        assert_eq!(
+            fields.len(),
+            names.len(),
+            "column {names:?}, labels {first:?}..{last:?}, controls {controls:?}"
+        );
+        assert!(
+            fields
+                .windows(2)
+                .all(|pair| (pair[0].left() - pair[1].left()).abs() <= tolerance)
+        );
+    }
+    assert!(
+        blocks
+            .iter()
+            .all(|b| (b.width() - blocks[0].width()).abs() <= tolerance)
+    );
+    assert!(
+        blocks
+            .windows(2)
+            .all(|b| b[0].right() <= b[1].left() + tolerance)
+    );
+    let block = blocks.iter().copied().reduce(egui::Rect::union).unwrap();
+    let llh = label("Lat/Lon/Hgt");
+    assert!((llh.left() - starts[1]).abs() <= tolerance);
+    assert!((llh.width() - label_width).abs() <= tolerance);
+    assert!(llh.top() >= block.bottom() - tolerance);
+    let mut coordinates: Vec<_> = controls
+        .iter()
+        .filter(|(role, r)| *role == Role::SpinButton && llh.y_range().contains(r.center().y))
+        .map(|(_, r)| *r)
+        .collect();
+    coordinates.sort_by(|a, b| a.left().total_cmp(&b.left()));
+    assert_eq!(coordinates.len(), 3);
+    assert!(llh.right() <= coordinates[0].left() + tolerance);
+    assert!(
+        (coordinates[0].left() - llh.right() - h.ctx.global_style().spacing.item_spacing.x).abs()
+            <= tolerance
+    );
+    assert!((coordinates.last().unwrap().right() - blocks[2].right()).abs() <= tolerance);
+    let map = label("Map");
+    assert!(map.top() >= llh.bottom());
+    let fields: Vec<_> = controls
+        .iter()
+        .filter(|(role, _)| *role == Role::TextInput)
+        .map(|(_, r)| *r)
+        .collect();
+    assert_eq!(fields.len(), 2);
+    for field in &fields {
+        assert!((field.left() - block.left()).abs() <= tolerance);
+        assert!((field.right() - block.right()).abs() <= tolerance);
+    }
+    assert!(label("Tile URL ({z}/{x}/{y})").bottom() <= fields[0].top() + tolerance);
+    assert!(fields[0].bottom() <= label("Tile attribution").top() + tolerance);
+    assert!(label("Tile attribution").bottom() <= fields[1].top() + tolerance);
+    widgets.extend(
+        [
+            llh,
+            map,
+            label("Options"),
+            label("Tile URL ({z}/{x}/{y})"),
+            label("Tile attribution"),
+        ]
+        .map(|r| (Role::Label, r)),
+    );
+    for (i, (role, rect)) in widgets.iter().enumerate() {
+        assert!(
+            dialog.expand(tolerance).contains_rect(*rect),
+            "{role:?} {rect:?} clipped by {dialog:?}"
+        );
+        for (other_role, other) in &widgets[i + 1..] {
+            let overlap = rect.intersect(*other);
+            assert!(
+                overlap.width() <= tolerance || overlap.height() <= tolerance,
+                "{role:?} {rect:?} overlaps {other_role:?} {other:?}"
+            );
+        }
+    }
+    // Actual rendered text (including disabled LLH values) also stays inside the
+    // modal's clip, rather than relying only on accessibility widget rectangles.
+    for text in rendered_text_shapes(h) {
+        if !text.galley.text().is_empty() && dialog.contains(text.pos) {
+            assert!(
+                dialog
+                    .expand(tolerance)
+                    .contains_rect(text.visual_bounding_rect()),
+                "text {:?} clipped by dialog",
+                text.galley.text()
+            );
+        }
+    }
+    egui::vec2(label_width, field_width.unwrap())
+}
+
+fn options_at_text_scale(scale: f32) -> Harness<'static, PlotApp> {
+    let mut h = harness(0);
+    h.ctx.all_styles_mut(|style| {
+        for font in style.text_styles.values_mut() {
+            font.size *= scale;
+        }
+    });
+    h.run();
+    h.get_by_label("Options").click();
+    h.run();
+    h.get_by_label("Options...").click();
+    h.run();
+    h
+}
+
+#[test]
+fn options_columns_follow_reference_order_with_map_below() {
+    for scale in [1.0, 1.6] {
+        let mut h = options_at_text_scale(scale);
+        options_layout(&h);
+        select(&mut h, "Grid", "Circles/Label");
+        select(&mut h, "Average Pos", "Lat/Lon/Hgt");
+        let draft = h.state_mut().options.as_mut().unwrap();
+        draft.llh = [35.123456789, 139.123456789, 1234.5678];
+        draft.grid_label_size = 18.5;
+        draft.statistics_size = 24.0;
+        h.run();
+        options_layout(&h);
+        h.get_by_label("OK").click();
+        h.run();
+        assert_eq!(h.state().controller.settings.options.show_g_label, 4);
+        assert_eq!(h.state().controller.settings.options.grid_label_size, 18.5);
+        assert_eq!(h.state().controller.settings.options.statistics_size, 24.0);
+    }
+}
+
+#[test]
+fn options_uniform_cells_fit_the_first_frame_on_open() {
+    for scale in [1.0, 1.6] {
+        let mut h = harness(0);
+        h.ctx.all_styles_mut(|style| {
+            for font in style.text_styles.values_mut() {
+                font.size *= scale;
+            }
+        });
+        // Open directly, without queued menu events or a settling run, to inspect
+        // exactly the first frame containing the new dialog.
+        let mut draft = h.state().controller.settings.options.clone();
+        draft.origin = 5;
+        draft.llh = [35.123456789, 139.123456789, 1234.5678];
+        h.state_mut().options = Some(draft);
+        let frame = h.ctx.cumulative_frame_nr();
+        h.step();
+        assert_eq!(h.ctx.cumulative_frame_nr(), frame + 1);
+        options_layout(&h);
+    }
+}
+
+#[test]
+fn options_uniform_cells_fit_the_first_frame_after_text_size_changes() {
+    let mut h = options_at_text_scale(1.0);
+    let default = options_layout(&h);
+    let text_styles = h.ctx.global_style().text_styles.clone();
+    for scale in [1.6, 1.0] {
+        h.ctx.all_styles_mut(|style| {
+            style.text_styles = text_styles.clone();
+            for font in style.text_styles.values_mut() {
+                font.size *= scale;
+            }
+        });
+        let frame = h.ctx.cumulative_frame_nr();
+        h.step();
+        assert_eq!(h.ctx.cumulative_frame_nr(), frame + 1);
+        let sizes = options_layout(&h);
+        if scale > 1.0 {
+            assert!(sizes.x > default.x && sizes.y > default.y);
+        } else {
+            assert!((sizes - default).abs().max_elem() <= 1.0 / h.ctx.pixels_per_point());
+        }
+    }
+}
+
+#[test]
+fn options_uniform_cells_fit_the_first_frame_after_number_changes() {
+    let mut h = options_at_text_scale(1.0);
+    let default = options_layout(&h);
+    h.state_mut().options.as_mut().unwrap().y_range = 1_234_567_890_123.125;
+    h.step();
+    let wide = options_layout(&h);
+    assert!(wide.y > default.y);
+    h.state_mut().options.as_mut().unwrap().y_range = 5.0;
+    h.step();
+    let restored = options_layout(&h);
+    assert!((restored - default).abs().max_elem() <= 1.0 / h.ctx.pixels_per_point());
+}
+
+#[test]
+fn options_uniform_cells_remeasure_when_text_size_changes() {
+    let mut h = options_at_text_scale(1.0);
+    let default = options_layout(&h);
+    let text_styles = h.ctx.global_style().text_styles.clone();
+    h.ctx.all_styles_mut(|style| {
+        for font in style.text_styles.values_mut() {
+            font.size *= 1.6;
+        }
+    });
+    h.run();
+    let large = options_layout(&h);
+    assert!(large.x > default.x && large.y > default.y);
+    h.ctx.all_styles_mut(|style| {
+        style.text_styles = text_styles.clone();
+    });
+    h.run();
+    let restored = options_layout(&h);
+    let tolerance = 1.0 / h.ctx.pixels_per_point();
+    assert!((restored - default).abs().max_elem() <= tolerance);
+}
+
+#[test]
+fn grid_and_statistics_use_their_independent_configured_font_sizes() {
+    for kind in [0, 1] {
+        let mut h = harness(kind);
+        assert_eq!(
+            h.ctx.style_of(egui::Theme::Light).text_styles[&egui::TextStyle::Small].size,
+            Options::default().grid_label_size
+        );
+        for format in [2, 4] {
+            for (grid_size, statistics_size) in [(9.0, 12.0), (18.5, 14.0), (12.0, 24.0)] {
+                let options = &mut h.state_mut().controller.settings.options;
+                options.statistics = true;
+                options.show_g_label = format;
+                options.grid_label_size = grid_size;
+                options.statistics_size = statistics_size;
+                h.run();
+                let texts = rendered_text_shapes(&h);
+                let overlays: Vec<_> = texts
+                    .iter()
+                    .filter(|t| t.galley.text().contains("AVE="))
+                    .collect();
+                assert!(!overlays.is_empty());
+                assert!(
+                    overlays
+                        .iter()
+                        .flat_map(|t| &t.galley.job.sections)
+                        .all(|s| s.format.font_id == egui::FontId::monospace(statistics_size))
+                );
+                if kind == 0 {
+                    let top = h.state().geometry.unwrap().frames[0].unwrap().top();
+                    let labels: Vec<_> = texts
+                        .iter()
+                        .filter(|t| t.pos.y >= top - 30.0 && t.galley.text().parse::<f64>().is_ok())
+                        .collect();
+                    assert!(!labels.is_empty());
+                    assert!(
+                        labels
+                            .iter()
+                            .flat_map(|t| &t.galley.job.sections)
+                            .all(|s| s.format.font_id == egui::FontId::proportional(grid_size))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_configured_text_sizes() {
+    for (format, name) in [(2, "grid"), (4, "circles")] {
+        let mut h = harness(0);
+        let o = &mut h.state_mut().controller.settings.options;
+        o.show_g_label = format;
+        o.grid_label_size = 18.0;
+        o.statistics = true;
+        o.statistics_size = 16.0;
+        h.run();
+        save(&mut h, &format!("snapshot_plot_text_sizes_{name}"));
+    }
+}
+
+fn snapshot_grid_format(format: usize, name: &str) {
+    let mut h = harness(0);
+    h.state_mut().controller.settings.options.show_g_label = format;
+    h.run();
+    save(&mut h, &format!("snapshot_plot_grid_{name}"));
+    h.state_mut().controller.settings.show_grid = false;
+    h.run();
+    save(&mut h, &format!("snapshot_plot_grid_{name}_hidden"));
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_off() {
+    snapshot_grid_format(0, "off");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_lines() {
+    snapshot_grid_format(1, "lines");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_lines_labels() {
+    snapshot_grid_format(2, "lines_labels");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_circles() {
+    snapshot_grid_format(3, "circles");
+}
+#[test]
+#[ignore = "requires MRTKLIB_EGUI_SNAPSHOT_DIR and GPU adapter"]
+fn snapshot_grid_circles_labels() {
+    snapshot_grid_format(4, "circles_labels");
 }

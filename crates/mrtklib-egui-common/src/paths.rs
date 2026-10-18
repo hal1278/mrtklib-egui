@@ -66,14 +66,16 @@ mod tests {
 
     #[test]
     fn development_override_wins_without_looking_up_gui() {
+        // An absolute path on every platform (`/development/mock` is relative on Windows).
+        let mock = std::env::temp_dir().join("development").join("mock");
         assert_eq!(
             resolve_program(
-                Some("/development/mock".into()),
+                Some(mock.clone().into()),
                 || panic!("override must win"),
                 false
             )
             .unwrap(),
-            Path::new("/development/mock")
+            mock
         );
         assert_eq!(
             resolve_program(None, || Err("cannot locate GUI".into()), false).unwrap_err(),
