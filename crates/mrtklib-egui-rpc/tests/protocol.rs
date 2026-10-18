@@ -300,7 +300,14 @@ fn a_refused_connection_is_an_io_error() {
         .local_addr()
         .unwrap()
         .port();
-    let error = Client::connect(&format!("ws://127.0.0.1:{port}/rpc"), None, TIMEOUT).unwrap_err();
+    // Windows retries a refused connection before reporting it; this test timed out there
+    // with two seconds. Linux reports it at once, so a generous bound costs nothing.
+    let error = Client::connect(
+        &format!("ws://127.0.0.1:{port}/rpc"),
+        None,
+        Duration::from_secs(10),
+    )
+    .unwrap_err();
     assert!(matches!(error, Error::Io(_)), "{error:?}");
 }
 

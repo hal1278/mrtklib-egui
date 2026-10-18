@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
@@ -54,6 +55,19 @@ fn ready() {
     eprintln!("MRTK-RPC-READY {{\"url\":\"{URL}\"}}");
 }
 
+/// The peer has gone: end of stream. A process terminated on Windows does not close its
+/// sockets gracefully, so there the system resets the connection instead.
+fn peer_closed(socket: &mut TcpStream) -> bool {
+    match socket.read(&mut [0]) {
+        Ok(n) => n == 0,
+        Err(e) if cfg!(windows) => matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+        ),
+        Err(e) => panic!("{e}"),
+    }
+}
+
 fn idle() -> ! {
     loop {
         thread::park();
@@ -68,7 +82,7 @@ impl Grandchild {
     fn cleanup(&mut self) {
         let mut socket = self.socket.take().unwrap();
         socket.write_all(&[1]).unwrap();
-        assert_eq!(socket.read(&mut [0]).unwrap(), 0, "grandchild did not exit");
+        assert!(peer_closed(&mut socket), "grandchild did not exit");
     }
 }
 
@@ -109,6 +123,8 @@ fn inherited_pipes(
             Err(error) => panic!("cannot accept grandchild: {error}"),
         }
     };
+    // Windows sockets inherit the listener's non-blocking mode.
+    socket.set_nonblocking(false).unwrap();
     socket.set_read_timeout(Some(TIMEOUT)).unwrap();
     let mut started_byte = [0];
     socket.read_exact(&mut started_byte).unwrap();
@@ -562,11 +578,7 @@ fn drop_kills_reaps_and_joins() {
     let start = Instant::now();
     drop(process);
     assert!(start.elapsed() < TIMEOUT);
-    assert_eq!(
-        connection.read(&mut [0]).unwrap(),
-        0,
-        "child is still running"
-    );
+    assert!(peer_closed(&mut connection), "child is still running");
 }
 
 #[test]
@@ -745,7 +757,8 @@ fn held_stdin_stays_open_until_stop_and_working_directory_is_executed() {
         state
             .lines
             .iter()
-            .any(|line| line.text == format!("cwd={}", directory.display()))
+            .filter_map(|line| line.text.strip_prefix("cwd="))
+            .any(|cwd| Path::new(cwd) == directory)
     );
 }
 

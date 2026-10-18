@@ -373,7 +373,7 @@ mod tests {
             .collect();
         assert_eq!(
             values(&args, "-o"),
-            [home.join("out/in.obs").to_str().unwrap()]
+            [home.join("out").join("in.obs").to_str().unwrap()]
         );
         assert_eq!(
             values(&args, "-n"),
@@ -381,11 +381,15 @@ mod tests {
         );
         assert_eq!(
             args.last().unwrap(),
-            home.join("data/in.ubx").to_str().unwrap()
+            home.join("data").join("in.ubx").to_str().unwrap()
         );
         let preview = prepared.command.preview();
-        for path in ["out/in.obs", "custom.nav", "data/in.ubx"] {
-            assert!(preview.contains(home.join(path).to_str().unwrap()));
+        for path in [
+            home.join("out").join("in.obs"),
+            home.join("custom.nav"),
+            home.join("data").join("in.ubx"),
+        ] {
+            assert!(preview.contains(path.to_str().unwrap()), "{preview}");
         }
     }
 

@@ -46,27 +46,36 @@ impl CommandLine {
     pub fn preview(&self) -> String {
         let argv = std::iter::once(self.program.as_os_str())
             .chain(self.args.iter().map(OsString::as_os_str))
-            .map(|word| {
-                let text = mask::mask(&word.to_string_lossy(), &[]);
-                if !text.is_empty()
-                    && text
-                        .chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || "_./:-=@+*".contains(ch))
-                {
-                    text
-                } else {
-                    format!("{text:?}")
-                }
-            })
+            .map(|word| quote(mask::mask(&word.to_string_lossy(), &[])))
             .collect::<Vec<_>>()
             .join(" ");
         match &self.working_directory {
             Some(directory) => format!(
-                "Working directory: {:?} | Program: {argv}",
-                mask::mask(&directory.to_string_lossy(), &[])
+                "Working directory: {} | Program: {argv}",
+                quote_always(mask::mask(&directory.to_string_lossy(), &[]))
             ),
             None => argv,
         }
+    }
+}
+
+/// Display quoting for the preview, which is never executed. Windows paths keep single
+/// backslashes; elsewhere Rust's escaped quoting makes control characters visible.
+fn quote(text: String) -> String {
+    let plain = |ch: char| {
+        ch.is_ascii_alphanumeric() || "_./:-=@+*".contains(ch) || (cfg!(windows) && ch == '\\')
+    };
+    if !text.is_empty() && text.chars().all(plain) {
+        text
+    } else {
+        quote_always(text)
+    }
+}
+fn quote_always(text: String) -> String {
+    if cfg!(windows) && !text.chars().any(char::is_control) {
+        format!("\"{}\"", text.replace('"', "\\\""))
+    } else {
+        format!("{text:?}")
     }
 }
 
