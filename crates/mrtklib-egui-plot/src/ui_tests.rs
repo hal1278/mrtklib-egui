@@ -1706,3 +1706,24 @@ fn data2_matching_uses_gpst_when_utc_display_times_coincide_at_a_leap_second() {
     assert_eq!(marks.len(), 1);
     assert_eq!(marks[0].source, 0);
 }
+
+#[test]
+fn position_fix_vert_follows_the_displayed_difference() {
+    let mut c = two_solutions(1);
+    c.toggle(2);
+    let mut h = harness_with_controller(c);
+    h.get_by_label("Show Track").click();
+    h.run();
+    h.state_mut().playback.indices[0] = 5;
+    h.run();
+    let s = h.state().current_sample().unwrap();
+    assert_eq!(s.source, 2);
+    // The second solution is shifted 50 m in ECEF X, so the difference is far from solution 1.
+    let first = h.state().controller.all_samples[0]
+        .iter()
+        .find(|p| p.index == s.index)
+        .unwrap()
+        .enu[0];
+    assert!((s.enu[0] - first).abs() > 1.0);
+    assert!((h.state().viewport.vertical[0].center() - s.enu[0]).abs() < 1e-8);
+}

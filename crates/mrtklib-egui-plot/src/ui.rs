@@ -270,7 +270,10 @@ impl PlotApp {
     }
     fn current_sample(&self) -> Option<Sample> {
         let (source, index) = self.selected?;
-        if source == 2 && self.controller.settings.plot == 0 {
+        // In difference mode Gnd Trk and Position follow the displayed difference. RTKPLOT
+        // follows solution 1 on Position (`plotdraw.cpp:609-620`), which leaves the difference
+        // out of view for moving data.
+        if source == 2 && self.controller.settings.plot != 2 {
             data::difference(
                 &self.controller.all_samples[0],
                 &self.controller.all_samples[1],
