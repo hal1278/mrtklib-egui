@@ -725,6 +725,26 @@ fn status_coordinates_use_measured_width_and_the_llh_enu_choice() {
 }
 
 #[test]
+fn track_cursor_off_the_points_shows_its_latitude_and_longitude() {
+    let mut h = harness(0);
+    h.state_mut().hovered = None;
+    h.state_mut().cursor = Some((0, [1.0, 2.0]));
+    h.state_mut().status_width = 10000.0;
+    let both = h.state().epoch_text();
+    assert!(
+        both.contains("°") && both.contains("E=1.0000 N=2.0000"),
+        "{both}"
+    );
+    assert!(!both.contains("H="), "{both}");
+    h.state_mut().status_width = 1.0;
+    h.state_mut().controller.settings.cursor_llh = true;
+    let llh = h.state().epoch_text();
+    assert!(llh.contains("°") && !llh.contains("E="), "{llh}");
+    h.state_mut().controller.dataset.as_mut().unwrap().relative = true;
+    assert!(!h.state().epoch_text().contains("°"));
+}
+
+#[test]
 fn coordinate_button_is_hidden_when_both_llh_and_enu_fit() {
     let mut h = harness(1);
     hover_epoch(&mut h, 0);

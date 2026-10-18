@@ -74,6 +74,19 @@ pub fn ecef_to_enu(position: [f64; 3], origin: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// Inverse of [`ecef_to_enu`]: ECEF position of a local ENU offset from `origin`.
+pub fn enu_to_ecef(enu: [f64; 3], origin: [f64; 3]) -> [f64; 3] {
+    let [lat, lon, _] = ecef_to_llh(origin);
+    let (s, c) = lat.to_radians().sin_cos();
+    let (sl, cl) = lon.to_radians().sin_cos();
+    let [e, n, u] = enu;
+    [
+        origin[0] - sl * e - s * cl * n + c * cl * u,
+        origin[1] + cl * e - s * sl * n + c * sl * u,
+        origin[2] + c * n + s * u,
+    ]
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Statistics {
     pub average: f64,
@@ -138,6 +151,15 @@ mod tests {
             [1.0, 2.0, 3.0]
         );
         assert_eq!(ecef_to_enu([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]), [0.0; 3]);
+    }
+    #[test]
+    fn enu_to_ecef_inverts_ecef_to_enu() {
+        let origin = llh_to_ecef([35.6, 139.7, 40.0]);
+        let enu = [120.5, -33.25, 7.0];
+        let back = ecef_to_enu(enu_to_ecef(enu, origin), origin);
+        for i in 0..3 {
+            close(back[i], enu[i], 1e-8);
+        }
     }
     #[test]
     fn sample_statistics_and_rtkplot_2d() {

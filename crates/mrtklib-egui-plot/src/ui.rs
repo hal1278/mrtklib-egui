@@ -10,7 +10,7 @@ use crate::{
 use eframe::egui::{self, Color32};
 use egui_plot::{AxisHints, Line, LineStyle, Plot, PlotBounds, PlotPoint, Points};
 use mrtklib_egui_common::file_dialog::{FileDialog, Target};
-use mrtklib_egui_plotkit::{ecef_to_llh, horizontal_2d, solution_style, statistics};
+use mrtklib_egui_plotkit::{ecef_to_llh, enu_to_ecef, horizontal_2d, solution_style, statistics};
 use mrtklib_egui_supervisor::mask::mask;
 
 pub(crate) const INITIAL_SIZE: [f32; 2] = [1000.0, 760.0];
@@ -791,33 +791,34 @@ impl PlotApp {
                 time_label(o)
             );
             let suffix = format!("  Q={}", s.quality);
-            let mut both_shown = false;
-            let values = if self.controller.settings.plot == 2 {
-                format!(
+            let (values, both_shown) = if self.controller.settings.plot == 2 {
+                let values = format!(
                     "NS={:.0} AGE={:.2} s RATIO={:.1}",
                     s.nsat[0], s.nsat[1], s.nsat[2]
-                )
-            } else if let Some(llh) = llh {
-                let both = format!("{llh}  {enu}");
-                // Measure with the actual status font; no character-count width heuristic.
-                let full = format!("{prefix}{both}{suffix}");
-                let fits = self.status_text_width(&full) <= self.status_width;
-                if fits {
-                    both_shown = true;
-                    both
-                } else if self.controller.settings.cursor_llh {
-                    llh
-                } else {
-                    enu
-                }
+                );
+                (values, false)
             } else {
-                enu
+                self.coordinates(&prefix, llh, enu, &suffix)
             };
             return (format!("{prefix}{values}{suffix}"), both_shown);
         }
         if let Some((panel, [x, y])) = self.cursor {
             let text = if self.controller.settings.plot == 0 {
-                format!("E={x:.4} N={y:.4} m")
+                // Off the points RTKPLOT shows the cursor's latitude and longitude about the
+                // origin (`plotinfo.cpp:388-392`); relative or difference data have no position.
+                let llh = (!self.controller.selection.difference
+                    && self
+                        .controller
+                        .dataset
+                        .as_ref()
+                        .is_some_and(|d| !d.relative))
+                .then(|| self.controller.origin(o).ok())
+                .flatten()
+                .map(|origin| {
+                    let llh = ecef_to_llh(enu_to_ecef([x, y, 0.0], origin.position));
+                    latlon_text(llh, o.dms)
+                });
+                return self.coordinates("", llh, format!("E={x:.4} N={y:.4} m"), "");
             } else {
                 let (label, unit) = if self.controller.settings.plot == 1 {
                     (
@@ -847,6 +848,27 @@ impl PlotApp {
             return (text, false);
         }
         (String::new(), false)
+    }
+    /// Both LLH and ENU when they fit the status width, else the chosen one.
+    fn coordinates(
+        &self,
+        prefix: &str,
+        llh: Option<String>,
+        enu: String,
+        suffix: &str,
+    ) -> (String, bool) {
+        let Some(llh) = llh else {
+            return (enu, false);
+        };
+        let both = format!("{llh}  {enu}");
+        // Measure with the actual status font; no character-count width heuristic.
+        if self.status_text_width(&format!("{prefix}{both}{suffix}")) <= self.status_width {
+            (both, true)
+        } else if self.controller.settings.cursor_llh {
+            (llh, false)
+        } else {
+            (enu, false)
+        }
     }
     fn status_text_width(&self, text: &str) -> f32 {
         // Filled from the same layout used by the status panel.
@@ -1468,6 +1490,9 @@ fn coordinates(s: &Sample, kind: usize, component: usize) -> [f64; 2] {
 }
 
 fn llh_text(llh: [f64; 3], dms: bool) -> String {
+    format!("{} H={:.4} m", latlon_text(llh, dms), llh[2])
+}
+fn latlon_text(llh: [f64; 3], dms: bool) -> String {
     let angle = |value: f64| {
         if !dms {
             return format!("{value:.9}°");
@@ -1481,7 +1506,7 @@ fn llh_text(llh: [f64; 3], dms: bool) -> String {
             total % 60.0
         )
     };
-    format!("{} {} H={:.4} m", angle(llh[0]), angle(llh[1]), llh[2])
+    format!("{} {}", angle(llh[0]), angle(llh[1]))
 }
 #[cfg(test)]
 #[path = "ui_tests.rs"]
